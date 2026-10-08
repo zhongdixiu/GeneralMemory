@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, func, literal, or_, select
+from sqlalchemy import Select, String, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.orm import Session
 
-from memory_cmic.models import MemoryEmbedding, MemoryItem
-from memory_cmic.providers import ApplicabilityModel, ProviderError, normalize_business_domain
+from memory_cmic.extraction_input import input_size
+from memory_cmic.models import BusinessScene, MemoryEmbedding, MemoryItem
+from memory_cmic.providers import (
+    TASK_APPLICABILITY_PROMPT,
+    ApplicabilityModel,
+    Embedder,
+    ProviderError,
+    normalize_business_domain,
+)
 
 
 def _scope_filters(
@@ -183,3 +191,124 @@ def search_memories(
 
     ordered = sorted(ranked.values(), key=lambda item: (item[1], item[0].id))
     return applicable([memory for memory, _ in ordered[:candidate_limit]])
+
+
+def search_task_memories(
+    session: Session,
+    *,
+    tenant_id: str,
+    user_id: str,
+    query: str,
+    authorized_agent_ids: list[str],
+    company_ids: list[str],
+    embedder: Embedder,
+    applicability_model: object,
+    project_id: str | None = None,
+    limit: int = 10,
+    now: datetime | None = None,
+    trace: list[dict] | None = None,
+) -> list[MemoryItem]:
+    """Search a task without caller supplied business labels."""
+    if not query.strip() or limit <= 0:
+        raise ValueError("query must be nonempty and limit positive")
+    if not hasattr(applicability_model, "select_for_query"):
+        raise ValueError("applicability_model must support task queries")
+    query_vector = embedder.embed([query])[0]
+    scenes = session.scalars(
+        select(BusinessScene).where(BusinessScene.tenant_id == tenant_id)
+    ).all()
+    stale = [
+        scene for scene in scenes if scene.embedding is None or scene.model_id != embedder.model_id
+    ]
+    if stale:
+        vectors = embedder.embed([scene.definition for scene in stale])
+        for scene, vector in zip(stale, vectors, strict=True):
+            scene.embedding = vector
+            scene.model_id = embedder.model_id
+        session.flush()
+    scene_distance = BusinessScene.embedding.cosine_distance(query_vector)
+    scene_names = session.scalars(
+        select(BusinessScene.name)
+        .where(BusinessScene.tenant_id == tenant_id, BusinessScene.model_id == embedder.model_id)
+        .order_by(scene_distance)
+        .limit(3)
+    ).all()
+    routes = _subject_routes(
+        user_id=user_id,
+        authorized_agent_ids=authorized_agent_ids,
+        company_ids=company_ids,
+    )
+    base = _scope_filters(
+        tenant_id=tenant_id,
+        business_domain="",
+        project_id=project_id,
+        now=now or datetime.now(UTC),
+        semantic=True,
+    )
+    candidate_limit = max(30, limit * 3)
+    ranked: dict[str, tuple[MemoryItem, float, dict[str, int]]] = {}
+    for channel in ("scene", "semantic"):
+        channel_rows: dict[str, tuple[MemoryItem, float]] = {}
+        filters = base
+        if channel == "scene":
+            filters = (
+                *base,
+                or_(
+                    MemoryItem.business_domains.is_(None),
+                    MemoryItem.business_domains.op("&&")(array(scene_names, type_=String(32))),
+                ),
+            )
+        for route in routes:
+            statement = _vector_statement(
+                route=route,
+                scope_filters=filters,
+                model_id=embedder.model_id,
+                query_embedding=query_vector,
+                limit=candidate_limit,
+            )
+            for memory, distance in session.execute(statement):
+                previous = channel_rows.get(memory.id)
+                if previous is None or float(distance) < previous[1]:
+                    channel_rows[memory.id] = (memory, float(distance))
+        selected = sorted(channel_rows.values(), key=lambda row: (row[1], row[0].id))[
+            : max(1, candidate_limit // 2)
+        ]
+        for position, (memory, distance) in enumerate(selected, start=1):
+            previous = ranked.get(memory.id)
+            if previous is None:
+                ranked[memory.id] = (memory, distance, {channel: position})
+            else:
+                previous[2][channel] = position
+    ordered = sorted(ranked.values(), key=lambda row: (row[1], row[0].id))
+    # Both channels retain their nearest candidates before the shared judgement.
+    payload = [
+        {
+            "id": memory.id,
+            "memory": memory.content,
+            "business_domains": memory.business_domains,
+            "project_context": (memory.metadata_json or {}).get("project_context"),
+            "source_positions": positions,
+        }
+        for memory, _, positions in ordered
+    ]
+    input_limit = getattr(applicability_model, "input_limit", 9952)
+    if input_size(TASK_APPLICABILITY_PROMPT, {"query": query, "candidates": payload}) > input_limit:
+        raise ProviderError("task candidates exceed applicability input budget")
+    decisions = (
+        applicability_model.select_for_query(query=query, candidates=payload) if payload else []
+    )
+    by_id = {memory.id: memory for memory, _, _ in ordered}
+    if {item.get("id") for item in decisions} != set(by_id):
+        raise ProviderError("task applicability output cites unknown or missing memory IDs")
+    if trace is not None:
+        trace.extend(
+            {
+                "id": item["id"],
+                "sources": sorted(ranked[item["id"]][2]),
+                "source_positions": ranked[item["id"]][2],
+                "include": item["include"],
+                "reason": item["reason"],
+            }
+            for item in decisions
+        )
+    return [by_id[item["id"]] for item in decisions if item["include"]][:limit]

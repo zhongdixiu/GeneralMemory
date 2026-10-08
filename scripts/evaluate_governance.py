@@ -140,12 +140,22 @@ def main() -> None:
     )
     results = []
     for case in CASES:
-        decision = model.decide(case["payload"])
+        payload = {
+            **case["payload"],
+            "scenes": [
+                {"name": "report", "definition": "编写项目周报和复盘文档", "aliases": []}
+            ],
+        }
+        decision = model.decide(payload)
         actual = decision.model_dump()
         passed = (
             set(actual["merge_ids"]) == set(case["merge"])
             and {item["memory_id"] for item in actual["invalidations"]} == set(case["invalidation"])
             and bool(actual["inferences"]) == case["inference"]
+            and all(
+                item["scope_known"] and item["business_domains"] == ["report"]
+                for item in actual["inferences"]
+            )
         )
         results.append(
             {

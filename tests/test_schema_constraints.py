@@ -120,6 +120,7 @@ def test_expected_tables_extensions_and_indexes(connection: Connection) -> None:
         ).scalars()
     )
     assert {
+        "business_scene",
         "source_record",
         "memory_item",
         "profile_property",
@@ -154,6 +155,7 @@ def test_expected_tables_extensions_and_indexes(connection: Connection) -> None:
         ).scalars()
     )
     assert {
+        "ix_business_scene_embedding_hnsw",
         "ix_memory_item_business_domains_gin",
         "ix_memory_item_project_domains_gin",
         "ix_memory_embedding_active_hnsw",

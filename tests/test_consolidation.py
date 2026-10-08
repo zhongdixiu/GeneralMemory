@@ -20,6 +20,7 @@ from memory_cmic.consolidation import (
 from memory_cmic.governance_state import backfill_user, create_run, ensure_policy, schedule_due
 from memory_cmic.lifecycle import update_or_invalidate_source
 from memory_cmic.models import (
+    BusinessScene,
     GovernanceOperation,
     GovernancePending,
     GovernancePolicy,
@@ -51,6 +52,7 @@ def context(engine: Engine):
     yield factory, tenant
     with engine.begin() as conn:
         for model in (
+            BusinessScene,
             MemoryAuditLog,
             GovernanceOperation,
             GovernancePending,
@@ -73,6 +75,16 @@ def seed_fact(
     project_context: str | None = None,
     session_id: str | None = None,
 ) -> MemoryItem:
+    if session.get(BusinessScene, (tenant, "report")) is None:
+        session.add(
+            BusinessScene(
+                tenant_id=tenant,
+                name="report",
+                definition="编写项目周报和复盘文档",
+                aliases=[],
+            )
+        )
+        session.flush()
     source_id = f"src_{uuid4().hex}"
     source = create_source(
         session,
@@ -224,6 +236,8 @@ def test_inference_needs_independent_user_sources(context):
                     "source_ids": [first_id, second_id],
                     "confidence": 0.8,
                     "reason": "两次独立周报要求",
+                    "scope_known": True,
+                    "business_domains": ["report"],
                 }
             ],
             "invalidations": [],
@@ -246,6 +260,37 @@ def test_inference_needs_independent_user_sources(context):
         ).all()
         assert {edge.upstream_memory_id for edge in derives} == {first_id, second_id}
         assert len({edge.evidence_group_id for edge in derives}) == 1
+
+
+def test_inference_cannot_expand_basis_business_scope(context):
+    factory, tenant = context
+    with factory.begin() as session:
+        first = seed_fact(session, tenant, "周报先写结论")
+        second = seed_fact(session, tenant, "项目复盘先写结论")
+        backfill_user(session, tenant, "user_1")
+        create_run(session, tenant_id=tenant, user_id="user_1", operator_id="admin")
+    model = FakeModel(
+        {
+            "inferences": [
+                {
+                    "content": "用户编写所有文档时都先写结论",
+                    "source_ids": [first.id, second.id],
+                    "confidence": 0.9,
+                    "reason": "泛化到所有文档",
+                    "scope_known": True,
+                    "business_domains": None,
+                }
+            ]
+        }
+    )
+    assert run_once(factory, worker_id="test_scope_expansion", model=model, model_id="test-model")
+    with factory() as session:
+        assert not session.scalars(
+            select(MemoryItem).where(
+                MemoryItem.tenant_id == tenant,
+                MemoryItem.cognitive_type == "inference",
+            )
+        ).all()
 
 
 def test_small_backlog_reaches_max_wait(context):
@@ -324,6 +369,8 @@ def test_rejected_inference_paraphrase_waits_for_new_evidence(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.8,
                     "reason": "两次要求",
+                    "scope_known": True,
+                    "business_domains": ["report"],
                 }
             ],
             "invalidations": [],
@@ -356,6 +403,8 @@ def test_rejected_inference_paraphrase_waits_for_new_evidence(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.9,
                     "reason": "两次要求",
+                    "scope_known": True,
+                    "business_domains": ["report"],
                 }
             ],
             "invalidations": [],
@@ -479,6 +528,8 @@ def test_deleting_a_basis_stops_using_inference(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.8,
                     "reason": "两条独立要求",
+                    "scope_known": True,
+                    "business_domains": ["report"],
                 }
             ],
             "invalidations": [],
@@ -514,6 +565,8 @@ def test_same_session_restatements_do_not_support_inference(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.9,
                     "reason": "同会话的两条说法",
+                    "scope_known": True,
+                    "business_domains": ["report"],
                 }
             ],
             "invalidations": [],

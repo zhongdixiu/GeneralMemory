@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from memory_cmic.api import create_app
 from memory_cmic.auth import StaticCredentialStore
 from memory_cmic.models import (
+    BusinessScene,
     ConversationSession,
     MemoryAuditLog,
     MemoryEmbedding,
@@ -88,6 +89,7 @@ def worker_context(engine: Engine) -> Iterator[tuple[TestClient, str]]:
     with TestClient(create_app(_settings(tenant_id), engine)) as client:
         yield client, tenant_id
     with engine.begin() as connection:
+        connection.execute(delete(BusinessScene).where(BusinessScene.tenant_id == tenant_id))
         connection.execute(delete(MemoryAuditLog).where(MemoryAuditLog.tenant_id == tenant_id))
         connection.execute(delete(MemoryEvidence).where(MemoryEvidence.tenant_id == tenant_id))
         connection.execute(delete(MemoryEmbedding).where(MemoryEmbedding.tenant_id == tenant_id))

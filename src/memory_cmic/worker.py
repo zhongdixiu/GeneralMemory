@@ -17,6 +17,7 @@ from uuid import uuid4
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from memory_cmic.business_scenes import normalize_fact_scenes
 from memory_cmic.db import create_database_engine
 from memory_cmic.extraction_input import ExtractionBudget, build_slices, input_size, split_slice
 from memory_cmic.governance_state import mark_dirty
@@ -1013,46 +1014,69 @@ def _process_task(
         index = execution["next_slice"]
         current = execution["slices"][index]
         slice_input = replace(task_input, targets=current["targets"], history=current["history"])
-        consume_call()
-        try:
-            facts = fact_model.extract(targets=slice_input.targets, history=slice_input.history)
-        except OutputLimitError as exc:
+        prepared = execution.get("prepared_slice")
+        if prepared and prepared["index"] == index:
+            facts = [ExtractedFact.model_validate(value) for value in prepared["facts"]]
+        else:
+            consume_call()
             try:
-                children = split_slice(current)
-            except ValueError:
-                raise ProviderError("output truncation recovery exhausted") from exc
-            # Retain the frozen input and trim history again after splitting.
-            for child in children:
-                while (
-                    input_size(
-                        EXTRACTION_PROMPT,
+                facts = fact_model.extract(targets=slice_input.targets, history=slice_input.history)
+            except OutputLimitError as exc:
+                try:
+                    children = split_slice(current)
+                except ValueError:
+                    raise ProviderError("output truncation recovery exhausted") from exc
+                # Retain the frozen input and trim history again after splitting.
+                for child in children:
+                    while (
+                        input_size(
+                            EXTRACTION_PROMPT,
+                            {
+                                "targets": child["targets"],
+                                "history": child["history"],
+                            },
+                        )
+                        > budget.input_tokens - budget.output_tokens
+                    ):
+                        child["history"] = child["history"][1:]
+                with session_factory.begin() as session:
+                    task = _leased_task(session, **ownership)
+                    execution["slices"] = [
+                        *execution["slices"][:index],
+                        *children,
+                        *execution["slices"][index + 1 :],
+                    ]
+                    execution["diagnostics"] = [
+                        *execution["diagnostics"],
                         {
-                            "targets": child["targets"],
-                            "history": child["history"],
+                            "code": "OUTPUT_LIMIT_REACHED",
+                            "slice_id": index,
+                            "action_taken": "split",
+                            "attempt": execution["model_calls"],
                         },
-                    )
-                    > budget.input_tokens - budget.output_tokens
-                ):
-                    child["history"] = child["history"][1:]
+                    ]
+                    _save_execution(task, execution)
+                continue
+            validate_fact_evidence(facts, slice_input.targets)
+            facts = [
+                normalize_fact_scenes(
+                    session_factory,
+                    tenant_id=task_input.tenant_id,
+                    fact=fact,
+                    model=fact_model,
+                    embedder=embedder,
+                    consume_call=consume_call,
+                    budget=budget,
+                )
+                for fact in facts
+            ]
             with session_factory.begin() as session:
                 task = _leased_task(session, **ownership)
-                execution["slices"] = [
-                    *execution["slices"][:index],
-                    *children,
-                    *execution["slices"][index + 1 :],
-                ]
-                execution["diagnostics"] = [
-                    *execution["diagnostics"],
-                    {
-                        "code": "OUTPUT_LIMIT_REACHED",
-                        "slice_id": index,
-                        "action_taken": "split",
-                        "attempt": execution["model_calls"],
-                    },
-                ]
+                execution["prepared_slice"] = {
+                    "index": index,
+                    "facts": [fact.model_dump(mode="json") for fact in facts],
+                }
                 _save_execution(task, execution)
-            continue
-        validate_fact_evidence(facts, slice_input.targets)
         accepted = []
         skipped = []
         for fact in facts:
@@ -1092,6 +1116,7 @@ def _process_task(
                 session, task=task, task_input=slice_input, decisions=decisions, embedder=embedder
             )
             execution["next_slice"] = index + 1
+            execution.pop("prepared_slice", None)
             execution["changed"] = execution["changed"] or bool(decisions)
             execution["diagnostics"] = [*execution["diagnostics"], *skipped]
             for diagnostic in skipped:
@@ -1304,6 +1329,7 @@ def main() -> None:
         base_url=settings.dashscope_base_url,
         model=settings.dashscope_model,
         output_tokens=settings.extraction_budget.output_tokens,
+        input_tokens=settings.extraction_budget.input_tokens,
     ) if role == "add" else None
     embedder = SiliconFlowEmbedder(
         api_key=settings.siliconflow_api_key,

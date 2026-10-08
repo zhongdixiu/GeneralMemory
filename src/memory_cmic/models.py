@@ -31,6 +31,32 @@ class Base(DeclarativeBase):
     pass
 
 
+class BusinessScene(Base):
+    __tablename__ = "business_scene"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "name", name="pk_business_scene"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(32), nullable=False)
+    definition: Mapped[str] = mapped_column(String(512), nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(ARRAY(String(32)), nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))
+    model_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+Index(
+    "ix_business_scene_embedding_hnsw",
+    BusinessScene.embedding,
+    postgresql_using="hnsw",
+    postgresql_ops={"embedding": "vector_cosine_ops"},
+    postgresql_where=BusinessScene.embedding.is_not(None),
+)
+
+
 class SourceRecord(Base):
     __tablename__ = "source_record"
     __table_args__ = (

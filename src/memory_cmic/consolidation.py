@@ -16,6 +16,7 @@ from memory_cmic.extraction_input import input_size
 from memory_cmic.governance_state import lock_user, schedule_due
 from memory_cmic.lifecycle import evidence_group_is_complete, govern_memory, invalidate_memory
 from memory_cmic.models import (
+    BusinessScene,
     GovernanceOperation,
     GovernancePending,
     GovernancePolicy,
@@ -49,15 +50,21 @@ PROMPT = (
     "must remain two facts, not a third inferred memory. Infer only a generalization of a "
     "repeated tendency across distinct task contexts, such as weekly reports and project "
     "retrospectives sharing an output pattern. "
-    "Keep project and business "
-    "conditions. Explicit user facts override guesses. Never repeat a rejected conclusion, even "
+    "Keep project and business conditions. For each inference judge applicability from its "
+    "content and evidence, then provide scope_known and canonical business_domains using "
+    "the supplied scene definitions. Null means verified unrestricted, not unknown. "
+    "When an inference is scene-limited, state that activity in the content itself; do not "
+    "describe it as applying to all documents or tasks. "
+    "Do not copy a source label without checking the inferred meaning. "
+    "Explicit user facts override guesses. Never repeat a rejected conclusion, even "
     "with different wording, unless its underlying independent evidence changed. "
     "Only invalidate a memory when a later explicit user correction quoted verbatim in an "
     "active source proves it obsolete. Do not invalidate solely due to age or model suspicion. "
     "For merely suspected staleness, list a suspicion and leave the memory active. "
     "merge_ids lists other memory IDs, excluding anchor_id. Explain the exact shared meaning "
     "in merge_reason. Use only supplied IDs. Return {merge_ids:[memory_id], merge_reason:string, "
-    "inferences:[{content,source_ids:[memory_id],confidence:0..1,reason}], "
+    "inferences:[{content,source_ids:[memory_id],confidence:0..1,reason,"
+    "scope_known:boolean,business_domains:[scene_name]|null}], "
     "invalidations:[{memory_id,source_id,quote,reason}], "
     "suspicions:[{memory_id,reason}]}. Spell these five top-level keys exactly. "
     "Empty arrays are valid."
@@ -70,6 +77,8 @@ class InferenceProposal(BaseModel):
     source_ids: list[str] = Field(min_length=2)
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1, max_length=512)
+    scope_known: bool
+    business_domains: list[str] | None = Field(min_length=1)
 
 
 class InvalidationProposal(BaseModel):
@@ -128,12 +137,21 @@ class QwenConsolidationModel:
             raise ProviderError(f"invalid consolidation decision: {exc}") from exc
 
 
-def _scope_key(memory: MemoryItem) -> tuple:
+def _scene_aliases(session: Session, tenant_id: str) -> dict[str, str]:
+    aliases = {}
+    for scene in session.scalars(select(BusinessScene).where(BusinessScene.tenant_id == tenant_id)):
+        aliases[scene.name] = scene.name
+        aliases.update({alias.strip().lower(): scene.name for alias in scene.aliases})
+    return aliases
+
+
+def _scope_key(memory: MemoryItem, aliases: dict[str, str] | None = None) -> tuple:
     meta = memory.metadata_json or {}
+    domains = memory.business_domains
     return (
         memory.cognitive_type,
-        tuple(sorted(memory.business_domains or []))
-        if memory.business_domains is not None
+        tuple(sorted({(aliases or {}).get(value.strip().lower(), value) for value in domains}))
+        if domains is not None
         else None,
         tuple(sorted(memory.project_domains or [])) if memory.project_domains is not None else None,
         meta.get("project_context"),
@@ -151,6 +169,7 @@ def _same_interval(left: MemoryItem, right: MemoryItem) -> bool:
 
 def _scope_memories(session: Session, anchor: MemoryItem) -> list[MemoryItem]:
     now = datetime.now(UTC)
+    aliases = _scene_aliases(session, anchor.tenant_id)
     return [
         value
         for value in session.scalars(
@@ -164,7 +183,7 @@ def _scope_memories(session: Session, anchor: MemoryItem) -> list[MemoryItem]:
                 (MemoryItem.expired_at.is_(None)) | (MemoryItem.expired_at > now),
             )
         )
-        if _scope_key(value) == _scope_key(anchor)
+        if _scope_key(value, aliases) == _scope_key(anchor, aliases)
     ]
 
 
@@ -282,6 +301,12 @@ def _payload(
     ).all()
     payload = {
         "anchor_id": anchor.id,
+        "scenes": [
+            {"name": scene.name, "definition": scene.definition, "aliases": scene.aliases}
+            for scene in session.scalars(
+                select(BusinessScene).where(BusinessScene.tenant_id == anchor.tenant_id)
+            )
+        ],
         "memories": [
             {
                 "id": m.id,
@@ -462,7 +487,20 @@ def _infer(
     bases = [available.get(mid) for mid in dict.fromkeys(proposal.source_ids)]
     if len(bases) < 2 or any(m is None or m.status != "active" for m in bases):
         return None
-    if len({_scope_key(m) for m in bases}) != 1:
+    aliases = _scene_aliases(session, task.tenant_id)
+    if len({_scope_key(m, aliases) for m in bases}) != 1:
+        return None
+    basis_domains = _scope_key(bases[0], aliases)[1]
+    proposed_domains = (
+        tuple(
+            sorted({aliases.get(name.strip().lower(), name) for name in proposal.business_domains})
+        )
+        if proposal.business_domains is not None
+        else None
+    )
+    if not proposal.scope_known or proposed_domains != basis_domains:
+        return None
+    if basis_domains is not None and any(name not in aliases.values() for name in basis_domains):
         return None
     source_hashes = set()
     source_sessions = set()
@@ -529,7 +567,7 @@ def _infer(
         subject_type="user",
         subject_id=task.user_id,
         cognitive_type="inference",
-        business_domains=first.business_domains,
+        business_domains=list(basis_domains) if basis_domains is not None else None,
         project_domains=first.project_domains,
         summary=proposal.content[:512],
         content=proposal.content,
@@ -624,10 +662,11 @@ def _invalidate(
             MemoryEvidence.downstream_memory_id != target.id,
         )
     ).all()
+    aliases = _scene_aliases(session, task.tenant_id)
     if not any(
         (other := session.get(MemoryItem, edge.downstream_memory_id)) is not None
         and other.status == "active"
-        and _scope_key(other) == _scope_key(target)
+        and _scope_key(other, aliases) == _scope_key(target, aliases)
         for edge in corroborated
     ):
         return None
@@ -1099,7 +1138,8 @@ def revert_operation(
                 MemoryItem.created_at > operation.created_at,
             )
         ).all()
-        if any(_scope_key(item) == _scope_key(memory) for item in later):
+        aliases = _scene_aliases(session, operation.tenant_id)
+        if any(_scope_key(item, aliases) == _scope_key(memory, aliases) for item in later):
             raise RevertConflict("new facts appeared in this scope")
         memory.status = "active"
         memory.version += 1

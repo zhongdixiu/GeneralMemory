@@ -17,7 +17,7 @@ class OutputLimitError(ProviderError):
     pass
 
 
-PROMPT_VERSION = "p02-v6"
+PROMPT_VERSION = "p02-v7-scenes"
 
 EXTRACTION_PROMPT = (
     "Extract atomic durable facts newly stated or explicitly confirmed by target user messages. "
@@ -109,6 +109,27 @@ APPLICABILITY_PROMPT = (
     "Different projects or genuinely different scenarios must be excluded. A relevant "
     "general user fact can apply across scenarios. Do not select merely because topics overlap. "
     "Return JSON {memory_ids:[string]} using only supplied candidate IDs."
+)
+
+SCENE_PROMPT = (
+    "Map each proposed business task label to an existing scene only when its definition "
+    "covers the same activity. A subtype may reuse a broader scene, but a different activity "
+    "must get a new short canonical name in the user's language and a precise definition. "
+    "Do not broaden existing definitions. Project names, customers and objects are not scenes. "
+    "Return JSON {decisions:[{label:string,name:string,definition:string|null}]} "
+    "with one decision for every input label. Existing names require definition=null."
+)
+
+TASK_APPLICABILITY_PROMPT = (
+    "Judge every candidate memory against the task query. Check task relevance, business "
+    "applicability, project conditions, customer/recipient conditions and other conditions "
+    "in the full memory text. Include relevant memories when conditions are unknown, preserving "
+    "their full conditional text. Exclude clear mismatches. A more specific conflicting rule "
+    "takes precedence only when the query explicitly satisfies its condition; keep unrelated "
+    "requirements from a general memory. Do not change memory state. "
+    "Return JSON {decisions:[{id:string,include:boolean,reason:string}]} with exactly one "
+    "decision per supplied candidate. Order included decisions by task relevance and applicable "
+    "specificity. Use only supplied IDs."
 )
 
 
@@ -281,6 +302,11 @@ class QwenFactModel:
     base_url: str
     model: str = "qwen3.8-max"
     output_tokens: int = 2048
+    input_tokens: int = 12000
+
+    @property
+    def input_limit(self) -> int:
+        return self.input_tokens - self.output_tokens
 
     def __post_init__(self) -> None:
         self._client = OpenAI(
@@ -355,6 +381,35 @@ class QwenFactModel:
         if not set(output.memory_ids).issubset({m["id"] for m in candidates}):
             raise ProviderError("applicability output cites an unknown memory ID")
         return list(dict.fromkeys(output.memory_ids))
+
+    def normalize_scenes(self, *, labels: list[str], scenes: list[dict[str, Any]]):
+        from memory_cmic.business_scenes import SceneDecision
+
+        raw = self._json_completion(SCENE_PROMPT, {"labels": labels, "scenes": scenes})
+        values = raw.get("decisions")
+        if not isinstance(values, list) or len(values) != len(labels):
+            raise ProviderError("invalid scene normalization output")
+        try:
+            return [SceneDecision(**value) for value in values]
+        except (TypeError, KeyError) as exc:
+            raise ProviderError("invalid scene normalization output") from exc
+
+    def select_for_query(self, *, query: str, candidates: list[dict[str, Any]]):
+        raw = self._json_completion(
+            TASK_APPLICABILITY_PROMPT, {"query": query, "candidates": candidates}
+        )
+        decisions = raw.get("decisions")
+        if not isinstance(decisions, list) or len(decisions) != len(candidates):
+            raise ProviderError("invalid task applicability output")
+        ids = {candidate["id"] for candidate in candidates}
+        if {item.get("id") for item in decisions if isinstance(item, dict)} != ids:
+            raise ProviderError("task applicability output cites unknown or missing memory IDs")
+        if any(
+            not isinstance(item.get("include"), bool) or not isinstance(item.get("reason"), str)
+            for item in decisions
+        ):
+            raise ProviderError("invalid task applicability decision")
+        return decisions
 
     def resolve(
         self,
