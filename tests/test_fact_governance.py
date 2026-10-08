@@ -167,17 +167,14 @@ def test_explicit_correction_invalidates_fact_and_derived_profile(worker_context
             .status
             == "stale"
         )
-        # Cleanup and profile work remains queued for P03/P04, never claimed as facts.
-        assert (
-            session.scalars(
-                select(MemoryTask).where(
-                    MemoryTask.tenant_id == tenant_id, MemoryTask.task_type == "profile_rebuild"
-                )
+        # The invalidated property and the user's current facts both request a rebuild.
+        rebuilds = session.scalars(
+            select(MemoryTask).where(
+                MemoryTask.tenant_id == tenant_id,
+                MemoryTask.task_type == "profile_rebuild",
             )
-            .one()
-            .status
-            == "pending"
-        )
+        ).all()
+        assert rebuilds and all(task.status == "pending" for task in rebuilds)
 
 
 def test_dispute_and_explicit_clarification(worker_context, engine):

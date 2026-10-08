@@ -135,6 +135,8 @@ def _propagate_memory_change(
     correlation_id: str | None,
     now: datetime,
 ) -> None:
+    from memory_cmic.profile import enqueue_profile_rebuild
+
     outgoing_edges = session.scalars(
         select(MemoryEvidence).where(
             MemoryEvidence.tenant_id == memory.tenant_id,
@@ -179,6 +181,11 @@ def _propagate_memory_change(
             downstream_profile_id=downstream_id,
             correlation_id=correlation_id,
             now=now,
+        )
+    if memory.subject_type == "user" and memory.cognitive_type == "fact":
+        enqueue_profile_rebuild(
+            session, tenant_id=memory.tenant_id, user_id=memory.subject_id,
+            correlation_id=correlation_id,
         )
 
 

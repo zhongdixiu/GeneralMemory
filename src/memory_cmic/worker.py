@@ -703,6 +703,8 @@ def _commit_results(
     decisions: list[FactDecision],
     embedder: Embedder,
 ) -> list[dict[str, str]]:
+    from memory_cmic.profile import enqueue_profile_rebuild
+
     results = []
     session.execute(
         select(
@@ -812,6 +814,12 @@ def _commit_results(
                     "governance_action": governance.action,
                 },
             )
+        )
+    if decisions:
+        session.flush()
+        enqueue_profile_rebuild(
+            session, tenant_id=task_input.tenant_id, user_id=task_input.user_id,
+            correlation_id=task.correlation_id,
         )
     return [
         result for result in results if session.get(MemoryItem, result["id"]).status == "active"
@@ -1315,10 +1323,12 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="MemoryCMIC worker")
-    parser.add_argument("--role", choices=("add", "maintenance", "consolidation"), default="add")
+    parser.add_argument(
+        "--role", choices=("add", "maintenance", "consolidation", "profile"), default="add"
+    )
     role = parser.parse_args().role
     settings = Settings.from_env()
-    if role in {"add", "consolidation"} and not settings.dashscope_api_key:
+    if role in {"add", "consolidation", "profile"} and not settings.dashscope_api_key:
         raise RuntimeError("DASHSCOPE_API_KEY must be set")
     if role in {"add", "maintenance"} and not settings.siliconflow_api_key:
         raise RuntimeError("SILICONFLOW_API_KEY must be set")
@@ -1343,6 +1353,16 @@ def main() -> None:
         output_tokens=settings.extraction_budget.output_tokens,
         input_tokens=settings.extraction_budget.input_tokens,
     ) if role == "consolidation" else None
+    if role == "profile":
+        from memory_cmic.profile import QwenProfileModel
+        from memory_cmic.profile import run_once as run_profile_once
+
+        profile_model = QwenProfileModel(
+            api_key=settings.dashscope_api_key,
+            base_url=settings.dashscope_base_url,
+            model=settings.dashscope_model,
+            output_tokens=settings.extraction_budget.output_tokens,
+        )
     worker_id = f"worker_{uuid4().hex}"
     stopping = False
 
@@ -1360,6 +1380,8 @@ def main() -> None:
                 session_factory, worker_id=worker_id, model=consolidation_model,
                 model_id=settings.siliconflow_embedding_model,
             )
+        elif role == "profile":
+            handled = run_profile_once(session_factory, worker_id=worker_id, model=profile_model)
         else:
             handled = run_once(
                 session_factory,
