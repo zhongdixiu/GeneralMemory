@@ -264,6 +264,12 @@ class ProfileProperty(Base):
             name="ck_profile_value_type",
         ),
         CheckConstraint(
+            "property_key IS NOT NULL OR (value_type = 'string' "
+            "AND jsonb_typeof(property_value) = 'string' "
+            "AND length(btrim(property_value #>> '{}')) > 0)",
+            name="ck_profile_statement_value",
+        ),
+        CheckConstraint(
             "status IN ('active', 'invalidated', 'disputed', 'expired')",
             name="ck_profile_status",
         ),
@@ -273,7 +279,7 @@ class ProfileProperty(Base):
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
     business_domains: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)))
-    property_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    property_key: Mapped[str | None] = mapped_column(String(128))
     property_value: Mapped[dict[str, Any] | list[Any] | str | int | float | bool] = mapped_column(
         JSONB, nullable=False
     )
@@ -303,6 +309,12 @@ Index(
     ProfileProperty.property_key,
     unique=True,
     postgresql_nulls_not_distinct=True,
+    postgresql_where=text("status = 'active' AND property_key IS NOT NULL"),
+)
+Index(
+    "ix_profile_property_active_user",
+    ProfileProperty.tenant_id,
+    ProfileProperty.user_id,
     postgresql_where=text("status = 'active'"),
 )
 

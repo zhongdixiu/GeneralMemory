@@ -29,30 +29,42 @@ from memory_cmic.worker import LeaseLostError, _lease_heartbeat, _leased_task
 logger = logging.getLogger(__name__)
 
 PROFILE_PROMPT = (
-    "Extract explicit, current, durable user properties into these Chinese keys only: "
-    "姓名 (stated name), 职位 (stated occupation or job title), "
-    "邮件回复偏好 (lasting email reply style), 输出要求 (lasting output format or detail). "
-    "Use a complete, concise Chinese sentence about the user as each value. For example, "
-    "'用户名叫大钟，是一名算法研发' yields 姓名='用户叫大钟' and 职位='用户是算法研发'. "
-    "For 职位, omit classifiers such as 一名 from the value. "
-    "Recurring preferences for document types, such as how to write project reports, count as "
-    "lasting 输出要求; preserve the document type in each value. Keep distinct properties "
-    "separate. Do not infer, generalize across document types, or use project-specific roles, "
-    "one-off task states, temporary requests, or historical facts. "
-    "Return JSON {properties:[{memory_id:string,key:string,value:string,"
-    "quote:string}]}. Quote must be an exact substring of that memory's content and must "
-    "directly support the value. Use only supplied memory IDs. Return an empty array when "
+    "Select explicit, current, durable information about the user: identity, occupations, "
+    "lasting preferences, habits and recurring requirements. Each value must express one "
+    "independently supported statement about the user. Splitting independent statements takes "
+    "priority over reusing a whole fact. Reuse wording only when the fact is already atomic; "
+    "otherwise make the minimal edits needed for separate complete statements. "
+    "For example, '用户希望以后项目周报先给结论，并附上数据依据' MUST produce two items: "
+    "'用户希望以后项目周报先给结论' and '用户希望以后项目周报附上数据依据'. "
+    "Both items cite the same memory_id, and each quote must retain enough source context "
+    "to support its document type and conditions; quoting the whole fact is allowed. "
+    "Keep qualifications, exceptions and conditions with "
+    "the statement they constrain. Preserve document types, business conditions and negations. "
+    "For example, '用户希望周报简洁，但风险说明需要详细' stays one qualified statement. "
+    "Complementary preferences such as concise emails and conclusion-first emails are separate "
+    "statements. Never bundle different requirements into a list or a combined template. "
+    "Do not infer, broaden applicability, or include project-specific roles, temporary requests, "
+    "one-off task states or historical facts. Do not assign property keys or categories. "
+    "Return JSON {properties:[{memory_id:string,value:string,quote:string}]}. "
+    "Quote must be an exact substring of that memory's content and directly support the whole "
+    "value, including its conditions. Use only supplied memory IDs. Return an empty array when "
     "nothing qualifies. Preserve the original language."
 )
-ENTITY_PREFIXES = {"姓名": "用户叫", "职位": "用户是"}
-KEYS = {*ENTITY_PREFIXES, "邮件回复偏好", "输出要求"}
-LEGACY_KEYS = {"identity.preferred_name", "pref.email.reply_style", "pref.output.requirements"}
+LEGACY_KEYS = {
+    "姓名",
+    "职位",
+    "邮件回复偏好",
+    "输出要求",
+    "identity.preferred_name",
+    "pref.email.reply_style",
+    "pref.output.requirements",
+}
+ProfileIdentity = tuple[tuple[str, ...] | None, str, datetime, datetime | None]
 
 
 class ProfileProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     memory_id: str
-    key: str
     value: str = Field(min_length=1, max_length=512)
     quote: str = Field(min_length=1)
 
@@ -86,6 +98,19 @@ def _user_memories(session: Session, tenant_id: str, user_id: str) -> list[Memor
         )
         .order_by(MemoryItem.id)
     ).all()
+
+
+def _eligible_fact(memory: MemoryItem, now: datetime) -> bool:
+    metadata = memory.metadata_json or {}
+    return (
+        memory.status == "active"
+        and memory.effective_at <= now
+        and (memory.expired_at is None or memory.expired_at > now)
+        and memory.project_domains is None
+        and not metadata.get("project_limited")
+        and not metadata.get("project_context")
+        and metadata.get("temporal_kind", "current") == "current"
+    )
 
 
 def _snapshot(session: Session, tenant_id: str, user_id: str) -> tuple[str, list[MemoryItem]]:
@@ -143,18 +168,8 @@ def _snapshot(session: Session, tenant_id: str, user_id: str) -> tuple[str, list
         for edge in edges
         if edge.relationship_type == "supports" and complete[edge.evidence_group_id]
     }
-    eligible = [
-        m
-        for m in memories
-        if m.id in valid_ids
-        and m.status == "active"
-        and m.effective_at <= now
-        and (m.expired_at is None or m.expired_at > now)
-        and m.project_domains is None
-        and not (m.metadata_json or {}).get("project_limited")
-        and not (m.metadata_json or {}).get("project_context")
-        and (m.metadata_json or {}).get("temporal_kind", "current") == "current"
-    ]
+    eligible = [m for m in memories if m.id in valid_ids and _eligible_fact(m, now)]
+    fingerprint.append(("eligible", [m.id for m in eligible]))
     digest = hashlib.sha256(
         json.dumps(fingerprint, ensure_ascii=False, sort_keys=True).encode()
     ).hexdigest()
@@ -189,7 +204,7 @@ def enqueue_profile_rebuild(
             "target_type": "subject",
             "target_id": user_id,
             "user_id": user_id,
-            "idempotency_key": f"profile_rebuild:v2:{user_id}:{watermark}",
+            "idempotency_key": f"profile_rebuild:v3:{user_id}:{watermark}",
             "correlation_id": correlation_id,
             "payload": {"watermark": watermark},
             "priority": 50,
@@ -201,63 +216,30 @@ def _scope(memory: MemoryItem) -> tuple[str, ...] | None:
     return tuple(sorted(set(memory.business_domains))) if memory.business_domains else None
 
 
-def _expiration(key: str, basis: list[MemoryItem]) -> datetime | None:
-    dates = [memory.expired_at for memory in basis]
-    if key == "输出要求":
-        return min((date for date in dates if date is not None), default=None)
-    return max(dates) if all(date is not None for date in dates) else None
-
-
 def _desired(
     memories: list[MemoryItem], proposals: list[ProfileProposal]
-) -> dict[tuple[tuple[str, ...] | None, str], tuple[Any, list[MemoryItem]]]:
+) -> dict[ProfileIdentity, tuple[str, list[MemoryItem]]]:
     by_id = {m.id: m for m in memories}
-    grouped: dict[tuple[tuple[str, ...] | None, str], list[tuple[str, MemoryItem]]] = defaultdict(
-        list
-    )
+    grouped: dict[ProfileIdentity, dict[str, MemoryItem]] = defaultdict(dict)
     for item in proposals:
         memory = by_id.get(item.memory_id)
+        value = item.value.strip()
         if (
             memory is None
-            or item.key not in KEYS
+            or not item.quote.strip()
             or item.quote not in memory.content
-            or not item.value.strip()
+            or not value
         ):
             raise ProviderError("profile output is not grounded in an eligible fact")
-        if item.key in ENTITY_PREFIXES and memory.business_domains is not None:
-            raise ProviderError("identity and occupation must have general applicability")
-        if item.key in ENTITY_PREFIXES:
-            prefix = ENTITY_PREFIXES[item.key]
-            entity = item.value.removeprefix(prefix).strip(" 。！!")
-            if not item.value.startswith(prefix):
-                raise ProviderError("identity or occupation value is not a complete property")
-            if item.key == "职位":
-                entity = entity.removeprefix("一名").removeprefix("一个")
-            if not entity or entity not in item.quote:
-                raise ProviderError("identity or occupation value is not supported by quote")
-        if not item.value.startswith("用户"):
-            raise ProviderError("profile value must be a sentence about the user")
-        if item.key == "邮件回复偏好" and _scope(memory) != ("email",):
-            raise ProviderError("email reply style requires email applicability")
-        value = f"{prefix}{entity}" if item.key in ENTITY_PREFIXES else item.value.strip()
-        grouped[(_scope(memory), item.key)].append((value, memory))
-    desired = {}
-    for identity, items in grouped.items():
-        values = sorted({value for value, _ in items})
-        if identity[1] != "输出要求" and len(values) != 1:
-            continue  # Unresolved conflict: do not silently select a winner.
-        basis = list({memory.id: memory for _, memory in items}.values())
-        desired[identity] = (
-            values if identity[1] == "输出要求" else values[0],
-            basis,
-        )
-    return desired
+        identity = (_scope(memory), value, memory.effective_at, memory.expired_at)
+        grouped[identity][memory.id] = memory
+    return {identity: (identity[1], list(basis.values())) for identity, basis in grouped.items()}
 
 
 def _replace(
     session: Session,
     task: MemoryTask,
-    desired: dict[tuple[tuple[str, ...] | None, str], tuple[Any, list[MemoryItem]]],
+    desired: dict[ProfileIdentity, tuple[str, list[MemoryItem]]],
 ) -> None:
     from memory_cmic.lifecycle import evidence_group_is_complete
 
@@ -267,89 +249,90 @@ def _replace(
         .where(
             ProfileProperty.tenant_id == task.tenant_id,
             ProfileProperty.user_id == task.user_id,
-            ProfileProperty.property_key.in_(KEYS | LEGACY_KEYS),
+            or_(
+                ProfileProperty.property_key.is_(None),
+                ProfileProperty.property_key.in_(LEGACY_KEYS),
+            ),
         )
         .with_for_update()
     ).all()
-    old = {(_scope(p), p.property_key): p for p in profiles if p.status == "active"}
-    versions = defaultdict(int)
+    remaining = desired.copy()
+    versions: dict[ProfileIdentity, int] = defaultdict(int)
+    identities = {
+        p.id: (_scope(p), p.property_value, p.effective_at, p.expired_at)
+        for p in profiles
+        if p.property_key is None and isinstance(p.property_value, str)
+    }
     for profile in profiles:
-        identity = (_scope(profile), profile.property_key)
-        versions[identity] = max(versions[identity], profile.version)
-    for identity in set(old) | set(desired):
-        current = old.get(identity)
-        proposed = desired.get(identity)
-        old_edges = (
-            session.scalars(
-                select(MemoryEvidence).where(
-                    MemoryEvidence.tenant_id == task.tenant_id,
-                    MemoryEvidence.downstream_profile_id == current.id,
-                    MemoryEvidence.status == "active",
-                )
-            ).all()
-            if current
-            else []
-        )
+        identity = identities.get(profile.id)
+        if identity is not None:
+            versions[identity] = max(versions[identity], profile.version)
+    for current in profiles:
+        if current.status != "active":
+            continue
+        identity = identities.get(current.id)
+        proposed = remaining.get(identity)
+        old_edges = session.scalars(
+            select(MemoryEvidence).where(
+                MemoryEvidence.tenant_id == task.tenant_id,
+                MemoryEvidence.downstream_profile_id == current.id,
+                MemoryEvidence.status == "active",
+            )
+        ).all()
         if (
             proposed
-            and current
             and current.property_value == proposed[0]
             and {e.upstream_memory_id for e in old_edges} == {m.id for m in proposed[1]}
-            and current.effective_at == max(m.effective_at for m in proposed[1])
-            and current.expired_at == _expiration(identity[1], proposed[1])
             and all(
                 evidence_group_is_complete(session, e.evidence_group_id, now=now) for e in old_edges
             )
         ):
+            remaining.pop(identity)
             continue
-        if current:
-            current.status = "invalidated"
-            current.version += 1
-            current.updated_at = now
-            for edge in old_edges:
-                edge.status = "invalidated"
-                edge.invalidated_at = now
-            session.add(
-                MemoryAuditLog(
-                    tenant_id=task.tenant_id,
-                    action="INVALIDATE",
-                    target_type="profile",
-                    target_id=current.id,
-                    operator_type="system",
-                    operator_id="memory_cmic",
-                    reason_code="PROFILE_REBUILT",
-                    correlation_id=task.correlation_id,
-                    state_before={"version": current.version - 1},
-                    state_after={"version": current.version, "status": "invalidated"},
-                )
+        current.status = "invalidated"
+        current.version += 1
+        current.updated_at = now
+        for edge in old_edges:
+            edge.status = "invalidated"
+            edge.invalidated_at = now
+        session.add(
+            MemoryAuditLog(
+                tenant_id=task.tenant_id,
+                action="INVALIDATE",
+                target_type="profile",
+                target_id=current.id,
+                operator_type="system",
+                operator_id="memory_cmic",
+                reason_code="PROFILE_REBUILT",
+                correlation_id=task.correlation_id,
+                state_before={"version": current.version - 1},
+                state_after={"version": current.version, "status": "invalidated"},
             )
-            session.flush()
-        if not proposed:
-            continue
-        value, basis = proposed
+        )
+        session.flush()
+    for identity, (value, basis) in remaining.items():
         profile = ProfileProperty(
             id=f"prf_{uuid4().hex}",
             tenant_id=task.tenant_id,
             user_id=task.user_id,
             business_domains=list(identity[0]) if identity[0] else None,
-            property_key=identity[1],
+            property_key=None,
             property_value=value,
-            value_type="list" if isinstance(value, list) else "string",
+            value_type="string",
             confidence=1,
             version=versions[identity] + 1,
-            effective_at=max(m.effective_at for m in basis),
-            expired_at=_expiration(identity[1], basis),
+            effective_at=identity[2],
+            expired_at=identity[3],
         )
         session.add(profile)
         session.flush()
-        shared_group = f"evg_{uuid4().hex}" if identity[1] == "输出要求" else None
         for memory in basis:
             session.add(
                 MemoryEvidence(
                     id=f"evi_{uuid4().hex}",
                     tenant_id=task.tenant_id,
                     relationship_type="profile_basis",
-                    evidence_group_id=shared_group or f"evg_{uuid4().hex}",
+                    evidence_group_id=f"evg_{uuid4().hex}",
                     upstream_memory_id=memory.id,
                     downstream_profile_id=profile.id,
                     upstream_version=memory.version,
@@ -401,7 +384,11 @@ def read_profiles(
                 ProfileProperty.business_domains.any(business_domain),
             ),
         )
-        .order_by(ProfileProperty.property_key)
+        .order_by(
+            ProfileProperty.property_key.nulls_last(),
+            ProfileProperty.property_value,
+            ProfileProperty.id,
+        )
     ).all()
     result = []
     for profile in profiles:
@@ -415,7 +402,15 @@ def read_profiles(
         source_valid = {}
         for edge in edges:
             memory = session.get(MemoryItem, edge.upstream_memory_id)
-            if memory is None or memory.tenant_id != tenant_id or memory.cognitive_type != "fact":
+            if (
+                memory is None
+                or memory.tenant_id != tenant_id
+                or memory.subject_type != "user"
+                or memory.subject_id != user_id
+                or memory.cognitive_type != "fact"
+                or not _eligible_fact(memory, check_time)
+                or (profile.property_key is None and _scope(memory) != _scope(profile))
+            ):
                 source_valid[edge.id] = False
                 continue
             source_groups = set(

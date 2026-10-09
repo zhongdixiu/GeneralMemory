@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -81,6 +82,9 @@ def insert_profile(
     profile_id: str,
     tenant_id: str = "tenant_a",
     business_domains: list[str] | None = None,
+    property_key: str | None = "pref.reply_style",
+    property_value: Any = "concise",
+    value_type: str = "string",
 ) -> None:
     connection.execute(
         text(
@@ -89,8 +93,8 @@ def insert_profile(
                 id, tenant_id, user_id, business_domains, property_key,
                 property_value, value_type, effective_at
             ) VALUES (
-                :id, :tenant_id, 'user_1', :business_domains, 'pref.reply_style',
-                '"concise"'::jsonb, 'string', CURRENT_TIMESTAMP
+                :id, :tenant_id, 'user_1', :business_domains, :property_key,
+                CAST(:property_value AS jsonb), :value_type, CURRENT_TIMESTAMP
             )
             """
         ),
@@ -98,6 +102,9 @@ def insert_profile(
             "id": profile_id,
             "tenant_id": tenant_id,
             "business_domains": business_domains,
+            "property_key": property_key,
+            "property_value": json.dumps(property_value),
+            "value_type": value_type,
         },
     )
 
@@ -295,6 +302,29 @@ def test_profile_has_one_active_unscoped_property(connection: Connection) -> Non
     insert_profile(connection, profile_id="prf_1")
     with pytest.raises(IntegrityError):
         insert_profile(connection, profile_id="prf_2")
+
+
+@pytest.mark.parametrize("scope", [None, ["email"]])
+def test_profile_allows_multiple_keyless_statements(connection: Connection, scope) -> None:
+    insert_profile(connection, profile_id="prf_1", property_key=None, business_domains=scope)
+    insert_profile(connection, profile_id="prf_2", property_key=None, business_domains=scope)
+
+
+@pytest.mark.parametrize(
+    "value,value_type",
+    [(["concise"], "list"), (1, "string"), ("concise", "number"), ("  ", "string")],
+)
+def test_keyless_profile_requires_nonempty_string(
+    connection: Connection, value, value_type
+) -> None:
+    with pytest.raises(IntegrityError):
+        insert_profile(
+            connection,
+            profile_id="prf_invalid",
+            property_key=None,
+            property_value=value,
+            value_type=value_type,
+        )
 
 
 def test_embedding_primary_key_prevents_duplicate_model(connection: Connection) -> None:

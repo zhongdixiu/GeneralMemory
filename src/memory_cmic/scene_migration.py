@@ -194,7 +194,11 @@ def apply_report(session: Session, records: list[dict]) -> list[dict]:
         ):
             outcomes.append({"id": row.id, "status": "ALIAS_CONFLICT"})
             continue
-        if item["target_type"] == "profile" and row.status == "active":
+        if (
+            item["target_type"] == "profile"
+            and row.status == "active"
+            and row.property_key is not None
+        ):
             collision = session.scalars(
                 select(ProfileProperty).where(
                     ProfileProperty.tenant_id == row.tenant_id,
