@@ -8,6 +8,8 @@ from typing import Any, Literal, Protocol
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from memory_cmic.ttl import RetentionKind
+
 
 class ProviderError(RuntimeError):
     pass
@@ -17,10 +19,24 @@ class OutputLimitError(ProviderError):
     pass
 
 
-PROMPT_VERSION = "p02-v7-scenes"
+PROMPT_VERSION = "p02-v10-resolved-subjects"
 
 EXTRACTION_PROMPT = (
-    "Extract atomic durable facts newly stated or explicitly confirmed by target user messages. "
+    "Extract atomic facts with value beyond a single task, newly stated or explicitly "
+    "confirmed by target user messages. "
+    "Write each memory as one short, standalone declarative sentence with an explicit "
+    "subject, predicate and object or complement. For facts about the speaker, use 用户 "
+    "as the Chinese subject (the user in English), not 我, 我们, 你, I, we or you. "
+    "Resolve pronouns, demonstratives and omitted subjects using target messages and history. "
+    "History may identify a referent without independently supplying a new fact. "
+    "For example, '我喜欢吃年糕。' becomes '用户喜欢吃年糕。'; with history '我最近搬到了杭州。', "
+    "'我住在那边。' becomes '用户住在杭州。'. Without a supported place referent, omit that fact. "
+    "For '项目方案详细说明。', write '用户要求项目方案提供详细说明。'. "
+    "Resolve references to other people to their supported names or roles, not to 用户: "
+    "if history identifies 他 as 李明, '以后邮件的审批都交给他负责。' can become "
+    "'李明负责以后的邮件审批。'. Never guess a person, place or object. "
+    "Keep literal names, titles and verbatim quotations unchanged: '我喜欢电影《我和我的祖国》。' "
+    "becomes '用户喜欢电影《我和我的祖国》。', not a replacement inside the title. "
     "History is context only and cannot independently produce facts. Cite target message_ids; "
     "at least one cited message must be user. Never infer user facts from "
     "assistant/system/tool alone. "
@@ -31,10 +47,15 @@ EXTRACTION_PROMPT = (
     "These are initial canonical labels, NOT an exhaustive enum. For other explicit scenarios "
     "extract a short, stable semantic label in the user's language, e.g. 方案编写. "
     "Reuse canonical labels for their synonyms. Split independent applicability requirements. "
-    "Personal identity, birthday and residence are unrestricted unless explicitly limited: "
-    "scope_known=true and business_domains=null. Unknown business applicability uses "
-    "scope_known=false, never null to imply unrestricted. A generic project-proposal preference "
-    "is a known proposal-writing scenario, not an unknown business or a specific project. "
+    "Personal identity, birthdays, residence, occupations, preferences and habits do not "
+    "require a business scenario: use business_domains=null unless the fact itself limits "
+    "business applicability. For example, '用户喜欢吃年糕。' is a long_term personal preference "
+    "with business_domains=null. Preserve every explicit business, project, customer, "
+    "recipient, occasion and temporal condition in memory text. Do not invent restrictions "
+    "from the source system or topic. Difficulty assigning a business label must not discard "
+    "a complete, supported fact; preserve its stated activity and use a short semantic label "
+    "when it is business-limited. A generic project-proposal preference is a proposal-writing "
+    "scenario, not a specific project. "
     "Project-related durable memories MUST be preserved. Project IDs are reserved and not "
     "assigned. If limited to a particular project set project_limited=true and project_context "
     "to its explicit name or self-contained identifying context; preserve that condition in "
@@ -42,17 +63,32 @@ EXTRACTION_PROMPT = (
     "Unknown or ambiguous project names do not by themselves invalidate a self-contained "
     "fact. Preserve the supplied project wording without guessing identity. Do not broaden a "
     "project rule into a general preference. A project material directory does not imply disk. "
-    "scope_known describes business applicability, NOT whether a project ID is resolved. "
     "Literal names/placeholders such as 未知项目 and 重名项目 are still project_context; "
-    "do not drop them or mark scope_known=false solely because they are unknown/ambiguous. "
+    "do not drop them solely because they are unknown/ambiguous. "
     "For '重名项目的材料放在批准目录', preserve that project condition and use an applicable "
     "material-management scenario label (not disk unless cloud drive is stated). "
     "Short standalone requirements such as '项目方案详细说明。' are durable preferences: "
-    "extract with a proposal-writing label, scope_known=true, project_limited=false. "
+    "extract with a proposal-writing label, project_limited=false. "
     "Use the original language in memory text. "
+    "Set retention_kind=temporary for explicitly temporary or stage-specific facts, such as "
+    "a current-phase responsibility or a near-term recurring requirement; regular for other "
+    "facts; long_term for personal identity, occupations, lasting preferences, habits and "
+    "recurring requirements suitable for a user profile. Project-limited lasting requirements "
+    "may also be long_term; do not broaden their conditions. Project/business information "
+    "such as suppliers and material locations is regular unless explicitly temporary. "
+    "Absence of a deadline alone never implies long_term. Split statements with different "
+    "lifetimes. Stage-specific responsibilities have value across tasks: extract their "
+    "explicit business activity as a scenario, e.g. material review uses 材料审核; "
+    "do not discard them solely because they are temporary. "
+    "Do not extract single-task execution progress, tool results or completion "
+    "notifications such as 'generating the file' or 'email sent'. Preserve uncertainty: "
+    "a possible plan is not a definite future event. "
     "Preserve temporal meaning in self-contained text. Resolve stated dates relative to "
     "occurred_at, "
     "not processing time. Use ISO8601 timestamps with timezone; never fabricate precision. "
+    "expired_at is only an explicitly stated deadline or historical interval boundary; "
+    "never compute a default TTL. For 'valid this week', use the next Monday at 00:00 in "
+    "the source message's timezone as the exclusive deadline. "
     "temporal_kind=historical requires an effective_at and expired_at interval. "
     "A year-only historical period uses Jan 1 through Jan 1 of the next year (exclusive). "
     "If a current move/update is stated only by year or month, set effective_at=null; "
@@ -63,8 +99,8 @@ EXTRACTION_PROMPT = (
     "current-state change. "
     "Unresolved references, missing context and no durable value should yield no fact. "
     "Return JSON {facts:[{memory:string,message_ids:[string],business_domains:[labels]|null,"
-    "scope_known:boolean,project_limited:boolean,project_context:string|null,"
-    "temporal_kind:current|historical,"
+    "project_limited:boolean,project_context:string|null,"
+    "temporal_kind:current|historical,retention_kind:temporary|regular|long_term,"
     "change_kind:none|correction|update|clarification,effective_at:timestamp|null,"
     "expired_at:timestamp|null}]}. Return {facts:[]} when there is no durable fact."
 )
@@ -80,7 +116,10 @@ GOVERNANCE_PROMPT = (
     "justification_message_id:string|null,justification_quote:string|null,histor"
     "ical_before_id:string|null}. "
     "ADD has no IDs. DUPLICATE has exactly one active ID and requires identical durable meaning "
-    "and temporal applicability, not mere similarity. Historical intervals that do not overlap "
+    "and temporal applicability, not mere similarity. When supplied, "
+    "candidate.explicit_expired_at is the stated temporal boundary; "
+    "candidate.expired_at may instead be a system TTL and must not prevent DUPLICATE solely "
+    "because the incoming fact has no stated deadline. Historical intervals that do not overlap "
     "are ADD, not conflict or duplicate. SUPERSEDE requires explicit user correction, "
     "current-state "
     "update, or clarification, with a verbatim target USER quote and its ID. It replaces an old "
@@ -170,10 +209,10 @@ class ExtractedFact(BaseModel):
     memory: str = Field(min_length=1, max_length=4096)
     message_ids: list[str] = Field(min_length=1)
     business_domains: list[str] | None = None
-    scope_known: bool = True
     project_limited: bool = False
     project_context: str | None = Field(default=None, min_length=1, max_length=512)
     temporal_kind: Literal["current", "historical"] = "current"
+    retention_kind: RetentionKind = "regular"
     change_kind: Literal["none", "correction", "update", "clarification"] = "none"
     effective_at: datetime | None = None
     expired_at: datetime | None = None
@@ -211,8 +250,6 @@ class ExtractedFact(BaseModel):
 
 
 def candidate_skip_reason(fact: ExtractedFact) -> str | None:
-    if not fact.scope_known:
-        return "SCOPE_UNRESOLVED"
     if fact.temporal_kind == "historical" and (
         fact.effective_at is None or fact.expired_at is None
     ):
@@ -346,17 +383,19 @@ class QwenFactModel:
             raw = self._json_completion(EXTRACTION_PROMPT, {"history": history, "targets": targets})
             required = {
                 "business_domains",
-                "scope_known",
                 "project_limited",
                 "project_context",
                 "temporal_kind",
+                "retention_kind",
                 "change_kind",
                 "effective_at",
                 "expired_at",
             }
             output = ExtractionOutput.model_validate(raw)
             if any(not required.issubset(fact) for fact in raw["facts"]):
-                raise ProviderError("extraction output is missing applicability or temporal fields")
+                raise ProviderError(
+                    "extraction output is missing applicability, temporal or retention fields"
+                )
         except ValidationError as exc:
             raise ProviderError(f"invalid extraction output: {exc}") from exc
         validate_fact_evidence(output.facts, targets)

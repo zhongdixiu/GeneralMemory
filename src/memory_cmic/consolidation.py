@@ -45,14 +45,21 @@ PROMPT = (
     "Only infer actionable task preferences or habits supported by at least two independent "
     "user sources from different underlying statements. Do not infer personality or identity. "
     "An inference must add a useful pattern rather than repeat a fact. "
+    "Write inferred content as a short, standalone declarative sentence with an explicit "
+    "subject, predicate and object or complement. Refer to this user as 用户 in Chinese "
+    "(the user in English), never 我, 我们, 你, I, we or you. Resolve remaining references "
+    "only from supplied memories and evidence; do not guess referents or change literal "
+    "names, titles or verbatim quotations. Keep all supporting conditions when shortening. "
     "Do not turn two complementary explicit rules for the same artifact into a bundled template "
     "or conjunction. For example, 'conclusion first' plus 'attach data' for weekly reports "
     "must remain two facts, not a third inferred memory. Infer only a generalization of a "
     "repeated tendency across distinct task contexts, such as weekly reports and project "
     "retrospectives sharing an output pattern. "
-    "Keep project and business conditions. For each inference judge applicability from its "
-    "content and evidence, then provide scope_known and canonical business_domains using "
-    "the supplied scene definitions. Null means verified unrestricted, not unknown. "
+    "Preserve explicit business, project, customer, occasion and temporal conditions in the "
+    "inferred content. Provide canonical business_domains using the supplied scene definitions; "
+    "null means no business restriction in the evidence. Do not reject a supported pattern "
+    "solely because it has no business label. Inferred domains must match the basis domains; "
+    "never broaden restricted evidence into a general preference. "
     "When an inference is scene-limited, state that activity in the content itself; do not "
     "describe it as applying to all documents or tasks. "
     "Do not copy a source label without checking the inferred meaning. "
@@ -62,9 +69,11 @@ PROMPT = (
     "active source proves it obsolete. Do not invalidate solely due to age or model suspicion. "
     "For merely suspected staleness, list a suspicion and leave the memory active. "
     "merge_ids lists other memory IDs, excluding anchor_id. Explain the exact shared meaning "
-    "in merge_reason. Use only supplied IDs. Return {merge_ids:[memory_id], merge_reason:string, "
+    "in merge_reason. Inference source_ids must be IDs of basis memories from memories[].id, "
+    "never IDs of raw sources from sources[].id. Use only supplied IDs. "
+    "Return {merge_ids:[memory_id], merge_reason:string, "
     "inferences:[{content,source_ids:[memory_id],confidence:0..1,reason,"
-    "scope_known:boolean,business_domains:[scene_name]|null}], "
+    "business_domains:[scene_name]|null}], "
     "invalidations:[{memory_id,source_id,quote,reason}], "
     "suspicions:[{memory_id,reason}]}. Spell these five top-level keys exactly. "
     "Empty arrays are valid."
@@ -77,7 +86,6 @@ class InferenceProposal(BaseModel):
     source_ids: list[str] = Field(min_length=2)
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1, max_length=512)
-    scope_known: bool
     business_domains: list[str] | None = Field(min_length=1)
 
 
@@ -498,7 +506,7 @@ def _infer(
         if proposal.business_domains is not None
         else None
     )
-    if not proposal.scope_known or proposed_domains != basis_domains:
+    if proposed_domains != basis_domains:
         return None
     if basis_domains is not None and any(name not in aliases.values() for name in basis_domains):
         return None

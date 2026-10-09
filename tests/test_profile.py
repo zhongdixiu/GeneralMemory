@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from runpy import run_path
 from time import monotonic, sleep
 from uuid import uuid4
 
@@ -23,6 +25,7 @@ from memory_cmic.models import (
     SourceRecord,
 )
 from memory_cmic.profile import ProfileProposal, enqueue_profile_rebuild, read_profiles, run_once
+from memory_cmic.providers import QwenFactModel
 from memory_cmic.repositories import (
     add_evidence_group,
     create_memory,
@@ -569,6 +572,63 @@ def test_profile_expiration_and_future_facts_are_filtered(profile_context):
         )
 
 
+@pytest.mark.parametrize("kind", ["temporary", "regular", "long_term"])
+def test_classified_profile_only_uses_long_term_facts(profile_context, kind):
+    factory, tenant_id = profile_context
+    with factory.begin() as session:
+        source, memory = _fact(session, tenant_id, "用户希望邮件回复简洁")
+        memory.metadata_json = {
+            **memory.metadata_json, "retention_kind": kind, "explicit_expired_at": None
+        }
+        source_id = source.id
+        enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id="user_profile")
+    _drain_profile(factory, tenant_id, VerbatimProfileModel())
+    with factory() as session:
+        rows = read_profiles(
+            session, tenant_id=tenant_id, user_id="user_profile", business_domain="email"
+        )
+        assert len(rows) == (1 if kind == "long_term" else 0)
+        if rows:
+            assert rows[0].expired_at is None
+    if kind == "long_term":
+        with factory.begin() as session:
+            update_or_invalidate_source(
+                session, tenant_id=tenant_id, source_id=source_id, status="invalidated"
+            )
+        with factory() as session:
+            assert read_profiles(
+                session, tenant_id=tenant_id, user_id="user_profile", business_domain="email"
+            ) == []
+
+
+def test_ttl_report_lists_unclassified_facts_and_profiles_without_changes(profile_context):
+    factory, tenant_id = profile_context
+    with factory.begin() as session:
+        _, legacy = _fact(session, tenant_id, "用户希望邮件回复简洁")
+        _, classified = _fact(session, tenant_id, "本阶段邮件回复详细")
+        classified.metadata_json = {
+            **classified.metadata_json,
+            "retention_kind": "temporary",
+            "explicit_expired_at": None,
+        }
+        legacy_id, legacy_metadata = legacy.id, legacy.metadata_json
+        enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id="user_profile")
+    _drain_profile(factory, tenant_id, VerbatimProfileModel())
+    build_report = run_path(
+        str(Path(__file__).parents[1] / "scripts/report_memory_ttl.py")
+    )["build_report"]
+    with factory() as session:
+        report = build_report(session, tenant_id)
+        assert [row["id"] for row in report] == [legacy_id]
+        assert report[0]["proposed_retention_kind"] is None
+        assert [profile["value"] for profile in report[0]["profiles"]] == [
+            "用户希望邮件回复简洁"
+        ]
+        assert session.get(MemoryItem, legacy_id).metadata_json == legacy_metadata
+        assert session.get(MemoryItem, legacy_id).expired_at is None
+        assert not session.dirty and not session.deleted and not session.new
+
+
 @pytest.fixture
 def integrated_profile_context(worker_context, engine):
     client, tenant_id = worker_context
@@ -591,7 +651,9 @@ def test_fact_governance_drives_profile_updates(integrated_profile_context, acti
         else "之前说错了，用户希望邮件回复详细"
     )
     _add(client, key="first", message_id="first", content=first)
-    _run_fact(factory, ScriptedModel({"business_domains": ["email"]}))
+    _run_fact(factory, ScriptedModel({
+        "business_domains": ["email"], "retention_kind": "long_term"
+    }))
     _drain_profile(factory, tenant_id, VerbatimProfileModel())
     with factory() as session:
         rows = read_profiles(
@@ -600,7 +662,7 @@ def test_fact_governance_drives_profile_updates(integrated_profile_context, acti
         assert len(rows) == 1
         first_id = rows[0].id
     _add(client, key="second", message_id="second", content=second)
-    fields = {"business_domains": ["email"]}
+    fields = {"business_domains": ["email"], "retention_kind": "long_term"}
     if action == "SUPERSEDE":
         fields["change_kind"] = "correction"
     _run_fact(factory, ScriptedModel(fields, action=action))
@@ -620,6 +682,68 @@ def test_fact_governance_drives_profile_updates(integrated_profile_context, acti
         assert {row.property_value for row in rows} == expected
         if action == "ADD":
             assert next(row.id for row in rows if row.property_value == first) == first_id
+
+
+@pytest.mark.parametrize(
+    "content,normalized,domains,project_context",
+    [
+        ("我喜欢吃年糕。", "用户喜欢吃年糕。", None, None),
+        ("早餐时我喜欢吃年糕。", "用户在早餐时喜欢吃年糕。", None, None),
+        ("以后邮件回复都简洁一些。", "用户希望以后邮件回复简洁。", ["email"], None),
+        ("项目甲的周报先写结论。", "用户要求项目甲的周报先写结论。", ["report"], "项目甲"),
+    ],
+)
+def test_fact_without_scope_known_reaches_profile_with_conditions(
+    integrated_profile_context, monkeypatch, content, normalized, domains, project_context
+):
+    client, factory, tenant_id = integrated_profile_context
+    _add(client, key="profile-conditions", message_id="conditions", content=content)
+    fact = {
+        "memory": normalized,
+        "message_ids": ["conditions"],
+        "business_domains": domains,
+        "project_limited": project_context is not None,
+        "project_context": project_context,
+        "temporal_kind": "current",
+        "retention_kind": "long_term",
+        "change_kind": "none",
+        "effective_at": None,
+        "expired_at": None,
+    }
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    monkeypatch.setattr(model, "_json_completion", lambda *args: {"facts": [fact]})
+    _run_fact(factory, model)
+    _drain_profile(factory, tenant_id, VerbatimProfileModel())
+    with factory() as session:
+        for domain in ("email", "disk"):
+            rows = read_profiles(
+                session, tenant_id=tenant_id, user_id="user_worker", business_domain=domain
+            )
+            expected = [normalized] if project_context is None and (
+                domains is None or domain in domains
+            ) else []
+            assert [row.property_value for row in rows] == expected
+            for row in rows:
+                assert row.business_domains == domains
+                evidence = session.scalars(
+                    select(MemoryEvidence).where(MemoryEvidence.downstream_profile_id == row.id)
+                ).one()
+                basis = session.get(MemoryItem, evidence.upstream_memory_id)
+                assert basis.cognitive_type == "fact"
+                assert basis.content == normalized
+
+
+def test_inference_is_not_promoted_to_explicit_profile(profile_context):
+    factory, tenant_id = profile_context
+    with factory.begin() as session:
+        _, memory = _fact(session, tenant_id, "用户编写周报和复盘时倾向先给结论")
+        memory.cognitive_type = "inference"
+        enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id="user_profile")
+    _drain_profile(factory, tenant_id, VerbatimProfileModel())
+    with factory() as session:
+        assert read_profiles(
+            session, tenant_id=tenant_id, user_id="user_profile", business_domain="email"
+        ) == []
 
 
 def test_repository_creates_keyless_statements_independently(session):

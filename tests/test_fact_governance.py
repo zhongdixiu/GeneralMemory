@@ -21,8 +21,10 @@ from memory_cmic.providers import (
     GovernanceDecision,
     OutputLimitError,
     ProviderError,
+    QwenFactModel,
 )
 from memory_cmic.repositories import add_evidence_group, create_or_replace_profile
+from memory_cmic.retrieval import search_memories
 from memory_cmic.worker import run_once
 
 worker_context = _worker_context
@@ -76,6 +78,70 @@ def _memories(session, tenant_id):
     ).all()
 
 
+@pytest.mark.parametrize("kind,days", [("temporary", 30), ("regular", 180), ("long_term", None)])
+def test_new_fact_gets_classified_ttl(worker_context, engine, kind, days):
+    client, tenant_id = worker_context
+    _add(client, key="ttl", message_id="ttl", content="本阶段由我负责材料审核。")
+    _run(engine, ScriptedModel({"retention_kind": kind}))
+    with Session(engine) as session:
+        memory = _memories(session, tenant_id)[0]
+        assert memory.metadata_json["retention_kind"] == kind
+        assert memory.metadata_json["explicit_expired_at"] is None
+        assert memory.expired_at == (
+            memory.effective_at + timedelta(days=days) if days is not None else None
+        )
+
+
+@pytest.mark.parametrize("semantic_duplicate", [False, True])
+def test_new_statement_only_adds_evidence_without_renewing_ttl(
+    worker_context, engine, semantic_duplicate
+):
+    client, tenant_id = worker_context
+    _add(client, key="ttl-first", message_id="first", content="本阶段由我负责材料审核。")
+    _run(engine, ScriptedModel({"retention_kind": "temporary"}))
+    with Session(engine) as session:
+        original = _memories(session, tenant_id)[0]
+        original_id, expiry, version = original.id, original.expired_at, original.version
+    _add(
+        client, key="ttl-second", message_id="second",
+        content="本阶段的材料审核由我负责。" if semantic_duplicate else "本阶段由我负责材料审核。",
+        occurred_at="2026-09-25T09:00:00+08:00",
+    )
+    _run(engine, ScriptedModel({"retention_kind": "temporary"}, action="DUPLICATE"))
+    with Session(engine) as session:
+        memories = _memories(session, tenant_id)
+        assert len(memories) == 1
+        assert (memories[0].id, memories[0].expired_at, memories[0].version) == (
+            original_id, expiry, version
+        )
+        assert len(session.scalars(select(MemoryEvidence).where(
+            MemoryEvidence.tenant_id == tenant_id,
+            MemoryEvidence.downstream_memory_id == original_id,
+        )).all()) == 2
+
+
+def test_explicit_deadline_and_delayed_expired_fact(worker_context, engine):
+    client, tenant_id = worker_context
+    deadline = datetime.now(UTC) + timedelta(days=365)
+    _add(client, key="explicit", message_id="explicit", content="这个要求有效至指定日期。")
+    _run(engine, ScriptedModel({"expired_at": deadline, "retention_kind": "temporary"}))
+    task_id = _add(
+        client, key="delayed", message_id="delayed", content="当时本阶段由我负责材料审核。",
+        occurred_at=(datetime.now(UTC) - timedelta(days=31)).isoformat(),
+    )
+    _run(engine, ScriptedModel({"retention_kind": "temporary"}))
+    with Session(engine) as session:
+        explicit, delayed = _memories(session, tenant_id)
+        assert explicit.expired_at == deadline
+        assert explicit.metadata_json["explicit_expired_at"] == deadline.isoformat()
+        assert delayed.status == "expired"
+        assert session.get(MemoryTask, task_id).result_json == []
+        assert session.scalar(select(MemoryEmbedding).where(
+            MemoryEmbedding.tenant_id == tenant_id,
+            MemoryEmbedding.memory_id == delayed.id,
+        )) is None
+
+
 @pytest.mark.parametrize("second_scope", [["disk"], ["communication"], None])
 def test_same_text_in_different_scope_is_not_merged(worker_context, engine, second_scope):
     client, tenant_id = worker_context
@@ -92,25 +158,83 @@ def test_same_text_in_different_scope_is_not_merged(worker_context, engine, seco
 
 
 @pytest.mark.parametrize(
-    "fields,code",
+    "content,normalized,domains,project_context",
     [
-        ({"scope_known": False}, "SCOPE_UNRESOLVED"),
-        ({"temporal_kind": "historical"}, "TIME_UNRESOLVED"),
+        ("我喜欢吃年糕。", "用户喜欢吃年糕。", None, None),
+        ("早餐时我喜欢吃年糕。", "用户在早餐时喜欢吃年糕。", None, None),
+        ("以后邮件回复都简洁一些。", "用户希望以后邮件回复简洁。", ["email"], None),
+        ("未知项目的材料放在批准目录。", "未知项目的材料存放在批准目录。", None, "未知项目"),
     ],
 )
-def test_unresolved_candidate_is_skipped(worker_context, engine, fields, code):
+def test_worker_saves_facts_without_scope_known_and_preserves_conditions(
+    worker_context, engine, monkeypatch, content, normalized, domains, project_context
+):
+    client, tenant_id = worker_context
+    task_id = _add(client, key="conditions", message_id="conditions", content=content)
+    fact = {
+        "memory": normalized,
+        "message_ids": ["conditions"],
+        "business_domains": domains,
+        "project_limited": project_context is not None,
+        "project_context": project_context,
+        "temporal_kind": "current",
+        "retention_kind": "long_term",
+        "change_kind": "none",
+        "effective_at": None,
+        "expired_at": None,
+    }
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    monkeypatch.setattr(model, "_json_completion", lambda *args: {"facts": [fact]})
+    _run(engine, model)
+    response = client.get(
+        f"/api/v1/tasks/{task_id}", headers={"Authorization": "Bearer worker-token"}
+    ).json()
+    assert response["status"] == "succeeded"
+    assert response["results"][0]["memory"] == normalized
+    with Session(engine) as session:
+        memory = _memories(session, tenant_id)[0]
+        assert memory.content == normalized
+        assert memory.summary == normalized
+        assert memory.business_domains == domains
+        assert memory.metadata_json["project_context"] == project_context
+        assert memory.expired_at is None
+        evidence = session.scalars(
+            select(MemoryEvidence).where(MemoryEvidence.downstream_memory_id == memory.id)
+        ).one()
+        assert evidence.evidence_snippet == content
+        source = session.get(SourceRecord, evidence.upstream_source_id)
+        assert source.raw_content == content
+        assert source.processed_version == 1
+        for domain in ("email", "disk"):
+            found = search_memories(
+                session,
+                tenant_id=tenant_id,
+                user_id="user_worker",
+                business_domain=domain,
+                project_id=None,
+                authorized_agent_ids=[],
+                company_ids=[],
+            )
+            expected = [memory.id] if project_context is None and (
+                domains is None or domain in domains
+            ) else []
+            assert [item.id for item in found] == expected
+
+
+def test_unresolved_historical_interval_is_skipped(worker_context, engine):
     client, tenant_id = worker_context
     task_id = _add(client, key="skip", message_id="skip", content="项目专属要求。")
-    _run(engine, ScriptedModel(fields))
+    _run(engine, ScriptedModel({"temporal_kind": "historical"}))
     with Session(engine) as session:
         assert _memories(session, tenant_id) == []
         task = session.get(MemoryTask, task_id)
         assert task.status == "succeeded"
         assert task.result_json == []
-        assert task.payload["execution"]["diagnostics"][0]["code"] == code
+        assert task.payload["execution"]["diagnostics"][0]["code"] == "TIME_UNRESOLVED"
         assert session.scalars(
             select(MemoryAuditLog).where(
-                MemoryAuditLog.tenant_id == tenant_id, MemoryAuditLog.reason_code == code
+                MemoryAuditLog.tenant_id == tenant_id,
+                MemoryAuditLog.reason_code == "TIME_UNRESOLVED",
             )
         ).one()
 

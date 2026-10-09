@@ -53,6 +53,7 @@ from memory_cmic.task_queue import (
     finish_task,
     renew_task_lease,
 )
+from memory_cmic.ttl import calculate_expired_at, explicit_expired_at
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ def _source_message(source: SourceRecord) -> dict[str, Any]:
         "message_id": source.message_id,
         "role": metadata.get("role"),
         "content": source.raw_content,
-        "occurred_at": source.occurred_at.isoformat(),
+        "occurred_at": metadata.get("original_occurred_at", source.occurred_at.isoformat()),
         "author_id": source.author_id,
         "tool_status": metadata.get("tool_status"),
         "reply_to_message_id": metadata.get("reply_to_message_id"),
@@ -492,9 +493,9 @@ def _check_governance(
         candidate = selected[0]
         if candidate["status"] != "active":
             raise ProviderError("disputed memory cannot be a duplicate")
-        if candidate.get("temporal_kind", "current") != fact.temporal_kind or candidate[
-            "expired_at"
-        ] != (fact.expired_at.isoformat() if fact.expired_at else None):
+        if candidate.get("temporal_kind", "current") != fact.temporal_kind or candidate.get(
+            "explicit_expired_at", candidate["expired_at"]
+        ) != (fact.expired_at.isoformat() if fact.expired_at else None):
             raise ProviderError("duplicate has different temporal applicability")
     if decision.action == "SUPERSEDE":
         if fact.change_kind == "none" or fact.temporal_kind == "historical":
@@ -554,6 +555,7 @@ def _candidate(memory: MemoryItem) -> dict[str, Any]:
         "status": memory.status,
         "effective_at": memory.effective_at.isoformat(),
         "expired_at": memory.expired_at.isoformat() if memory.expired_at else None,
+        "explicit_expired_at": explicit_expired_at(memory),
         "conflict_group_id": memory.conflict_group_id,
         "temporal_kind": (memory.metadata_json or {}).get("temporal_kind", "current"),
         "source_occurred_at": (memory.metadata_json or {}).get("source_occurred_at"),
@@ -594,7 +596,7 @@ def _plan_decisions(
                     and m["status"] == "active"
                     and _fact_hash(m["memory"]) == _fact_hash(fact.memory)
                     and m["temporal_kind"] == fact.temporal_kind
-                    and m["expired_at"]
+                    and m["explicit_expired_at"]
                     == (fact.expired_at.isoformat() if fact.expired_at else None)
                     and (
                         fact.temporal_kind != "historical"
@@ -671,6 +673,11 @@ def _plan_decisions(
                 for m in available:
                     if m["id"] in decision.memory_ids:
                         m.update(status="disputed", conflict_group_id=group)
+            expiry = calculate_expired_at(
+                retention_kind=fact.retention_kind,
+                effective_at=_fact_time(fact, task_input),
+                explicit_expired_at=fact.expired_at,
+            )
             new_candidate = {
                 "id": memory_id,
                 "memory": fact.memory,
@@ -678,7 +685,8 @@ def _plan_decisions(
                 "project_context": fact.project_context,
                 "status": "disputed" if group else "active",
                 "effective_at": _fact_time(fact, task_input).isoformat(),
-                "expired_at": fact.expired_at.isoformat() if fact.expired_at else None,
+                "expired_at": expiry.isoformat() if expiry else None,
+                "explicit_expired_at": fact.expired_at.isoformat() if fact.expired_at else None,
                 "conflict_group_id": group,
                 "temporal_kind": fact.temporal_kind,
                 "source_occurred_at": max(
@@ -687,7 +695,7 @@ def _plan_decisions(
                     if m["message_id"] in fact.message_ids
                 ).isoformat(),
             }
-            if fact.expired_at is None or fact.expired_at > datetime.now(UTC):
+            if expiry is None or expiry > datetime.now(UTC):
                 available.append(new_candidate)
         decisions.append(
             FactDecision(fact, embedding, decision, fingerprints[scope], memory_id, group)
@@ -747,6 +755,12 @@ def _commit_results(
                 conflict_group_id=conflict_group,
             )
             mark_dirty(session, old, from_add=True)
+        effective_at = _fact_time(fact, task_input)
+        expired_at = calculate_expired_at(
+            retention_kind=fact.retention_kind,
+            effective_at=effective_at,
+            explicit_expired_at=fact.expired_at,
+        )
         memory = MemoryItem(
             id=decision.memory_id,
             tenant_id=task_input.tenant_id,
@@ -759,12 +773,12 @@ def _commit_results(
             content=fact.memory,
             semantic_hash=_fact_hash(fact.memory),
             confidence=1,
-            effective_at=_fact_time(fact, task_input),
-            expired_at=fact.expired_at,
+            effective_at=effective_at,
+            expired_at=expired_at,
             status="disputed"
             if conflict_group
             else "expired"
-            if fact.expired_at is not None and fact.expired_at <= datetime.now(UTC)
+            if expired_at is not None and expired_at <= datetime.now(UTC)
             else "active",
             conflict_group_id=conflict_group,
             supersedes_id=existing[0].id if governance.action == "SUPERSEDE" else None,
@@ -772,6 +786,8 @@ def _commit_results(
                 "project_limited": fact.project_limited,
                 "project_context": fact.project_context,
                 "temporal_kind": fact.temporal_kind,
+                "retention_kind": fact.retention_kind,
+                "explicit_expired_at": fact.expired_at.isoformat() if fact.expired_at else None,
                 "source_occurred_at": max(
                     datetime.fromisoformat(m["occurred_at"])
                     for m in task_input.targets

@@ -32,7 +32,13 @@ PROFILE_PROMPT = (
     "Select explicit, current, durable information about the user: identity, occupations, "
     "lasting preferences, habits and recurring requirements. Each value must express one "
     "independently supported statement about the user. Splitting independent statements takes "
-    "priority over reusing a whole fact. Reuse wording only when the fact is already atomic; "
+    "priority over reusing a whole fact. Each value must be a short, standalone declarative "
+    "sentence with an explicit subject, predicate and object or complement. Refer to this "
+    "user as 用户 in Chinese (the user in English), not 我, 我们, 你, I, we or you. "
+    "Resolve legacy first-person facts to 用户, and other references only when the supplied "
+    "fact identifies the referent. Do not guess identities or change literal names and titles. "
+    "The quote remains verbatim even when the value resolves a pronoun. "
+    "Reuse wording only when the fact is already atomic and has a resolved explicit subject; "
     "otherwise make the minimal edits needed for separate complete statements. "
     "For example, '用户希望以后项目周报先给结论，并附上数据依据' MUST produce two items: "
     "'用户希望以后项目周报先给结论' and '用户希望以后项目周报附上数据依据'. "
@@ -110,6 +116,7 @@ def _eligible_fact(memory: MemoryItem, now: datetime) -> bool:
         and not metadata.get("project_limited")
         and not metadata.get("project_context")
         and metadata.get("temporal_kind", "current") == "current"
+        and metadata.get("retention_kind", "long_term") == "long_term"
     )
 
 

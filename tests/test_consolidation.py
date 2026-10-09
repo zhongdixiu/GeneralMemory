@@ -13,6 +13,7 @@ from memory_cmic.api import create_app
 from memory_cmic.auth import StaticCredentialStore
 from memory_cmic.consolidation import (
     ConsolidationDecision,
+    QwenConsolidationModel,
     RevertConflict,
     revert_operation,
     run_once,
@@ -43,6 +44,26 @@ class FakeModel:
     def decide(self, payload: dict) -> ConsolidationDecision:
         self.calls += 1
         return self.decision
+
+
+@pytest.mark.parametrize("domains", [None, ["report"]])
+def test_qwen_accepts_inference_without_scope_known(monkeypatch, domains):
+    model = QwenConsolidationModel(
+        api_key="fake", base_url="https://example.invalid/v1", model="test", output_tokens=2048
+    )
+    raw = {
+        "inferences": [{
+            "content": "用户编写周报和复盘时倾向先给结论",
+            "source_ids": ["first", "second"],
+            "confidence": 0.8,
+            "reason": "两次独立要求体现共同输出习惯",
+            "business_domains": domains,
+        }]
+    }
+    monkeypatch.setattr(model._model, "_json_completion", lambda *args: raw)
+    model._model.last_usage = None
+    decision = model.decide({})
+    assert decision.inferences[0].business_domains == domains
 
 
 @pytest.fixture
@@ -137,11 +158,14 @@ def seed_fact(
     return memory
 
 
-def test_merge_keeps_sources_and_admin_can_revert(context):
+@pytest.mark.parametrize("with_ttl", [False, True])
+def test_merge_keeps_sources_and_admin_can_revert(context, with_ttl):
     factory, tenant = context
     with factory.begin() as session:
-        seed_fact(session, tenant, "周报先写结论")
+        first = seed_fact(session, tenant, "周报先写结论")
         second = seed_fact(session, tenant, "周报结论放在开头")
+        expiry = first.effective_at + timedelta(days=180) if with_ttl else None
+        first.expired_at = second.expired_at = expiry
         second_id = second.id
         backfill_user(session, tenant, "user_1")
         create_run(session, tenant_id=tenant, user_id="user_1", operator_id="admin")
@@ -159,6 +183,7 @@ def test_merge_keeps_sources_and_admin_can_revert(context):
         loser = session.get(MemoryItem, operation.details["loser_id"])
         assert survivor.status == "active"
         assert loser.status == "invalidated"
+        assert survivor.expired_at == loser.expired_at == expiry
         evidence = session.scalars(
             select(MemoryEvidence).where(
                 MemoryEvidence.tenant_id == tenant,
@@ -216,14 +241,22 @@ def test_merge_keeps_sources_and_admin_can_revert(context):
         assert retry.json() == response.json()
     with factory() as session:
         assert session.get(MemoryItem, loser.id).status == "active"
+        assert session.get(MemoryItem, loser.id).expired_at == expiry
         assert session.get(GovernanceOperation, operation_id).reverted_at is not None
 
 
-def test_inference_needs_independent_user_sources(context):
+@pytest.mark.parametrize("ttl_days", [None, 30])
+@pytest.mark.parametrize("domains", [None, ["report"]])
+def test_inference_needs_independent_user_sources(context, ttl_days, domains):
     factory, tenant = context
     with factory.begin() as session:
         first = seed_fact(session, tenant, "周报写清楚结论")
         second = seed_fact(session, tenant, "周报要列出行动项")
+        first.business_domains = second.business_domains = domains
+        if ttl_days is not None:
+            first.expired_at = first.effective_at + timedelta(days=ttl_days)
+            second.expired_at = second.effective_at + timedelta(days=180)
+        expiry = first.expired_at
         first_id, second_id = first.id, second.id
         backfill_user(session, tenant, "user_1")
         create_run(session, tenant_id=tenant, user_id="user_1", operator_id="admin")
@@ -236,8 +269,7 @@ def test_inference_needs_independent_user_sources(context):
                     "source_ids": [first_id, second_id],
                     "confidence": 0.8,
                     "reason": "两次独立周报要求",
-                    "scope_known": True,
-                    "business_domains": ["report"],
+                    "business_domains": domains,
                 }
             ],
             "invalidations": [],
@@ -252,6 +284,8 @@ def test_inference_needs_independent_user_sources(context):
         ).all()
         assert len(inferred) == 1
         assert inferred[0].status == "active"
+        assert inferred[0].business_domains == domains
+        assert inferred[0].expired_at == expiry
         derives = session.scalars(
             select(MemoryEvidence).where(
                 MemoryEvidence.tenant_id == tenant,
@@ -277,7 +311,6 @@ def test_inference_cannot_expand_basis_business_scope(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.9,
                     "reason": "泛化到所有文档",
-                    "scope_known": True,
                     "business_domains": None,
                 }
             ]
@@ -369,7 +402,6 @@ def test_rejected_inference_paraphrase_waits_for_new_evidence(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.8,
                     "reason": "两次要求",
-                    "scope_known": True,
                     "business_domains": ["report"],
                 }
             ],
@@ -403,7 +435,6 @@ def test_rejected_inference_paraphrase_waits_for_new_evidence(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.9,
                     "reason": "两次要求",
-                    "scope_known": True,
                     "business_domains": ["report"],
                 }
             ],
@@ -528,7 +559,6 @@ def test_deleting_a_basis_stops_using_inference(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.8,
                     "reason": "两条独立要求",
-                    "scope_known": True,
                     "business_domains": ["report"],
                 }
             ],
@@ -565,7 +595,6 @@ def test_same_session_restatements_do_not_support_inference(context):
                     "source_ids": [first.id, second.id],
                     "confidence": 0.9,
                     "reason": "同会话的两条说法",
-                    "scope_known": True,
                     "business_domains": ["report"],
                 }
             ],

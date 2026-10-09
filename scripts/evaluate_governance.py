@@ -111,6 +111,33 @@ CASES = [
         "inference": False,
     },
     {
+        "name": "general_decision_habit",
+        "payload": {
+            "anchor_id": "m1",
+            "memories": [
+                {
+                    **memory(
+                        "m1", "做旅行计划时，我习惯先比较多个方案的优缺点再决定。",
+                        source("s1", "做旅行计划时，我习惯先比较多个方案的优缺点再决定。", EARLIER),
+                    ),
+                    "business_domains": None,
+                },
+                {
+                    **memory(
+                        "m2", "购买电脑前，我习惯对比几个型号的优缺点后再选择。",
+                        source("s2", "购买电脑前，我习惯对比几个型号的优缺点后再选择。", LATER),
+                    ),
+                    "business_domains": None,
+                },
+            ],
+            "rejected": [],
+        },
+        "merge": [],
+        "invalidation": [],
+        "inference": True,
+        "domains": None,
+    },
+    {
         "name": "single_incidental_action",
         "payload": {
             "anchor_id": "m1",
@@ -153,7 +180,9 @@ def main() -> None:
             and {item["memory_id"] for item in actual["invalidations"]} == set(case["invalidation"])
             and bool(actual["inferences"]) == case["inference"]
             and all(
-                item["scope_known"] and item["business_domains"] == ["report"]
+                item["business_domains"] == case.get("domains", ["report"])
+                and len(set(item["source_ids"])) >= 2
+                and set(item["source_ids"]) <= {m["id"] for m in payload["memories"]}
                 for item in actual["inferences"]
             )
         )

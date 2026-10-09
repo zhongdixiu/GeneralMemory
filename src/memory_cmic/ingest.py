@@ -112,6 +112,7 @@ def _source_values(
             "message_id": message.message_id,
             "turn_id": message.turn_id,
             "reply_to_message_id": message.reply_to_message_id,
+            "original_occurred_at": message.occurred_at.isoformat(),
         }
     )
     return {

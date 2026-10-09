@@ -78,7 +78,7 @@ def normalize_fact_scenes(
             select(func.pg_advisory_xact_lock(func.hashtextextended(f"scene:{tenant_id}", 0)))
         )
         _seed(session, tenant_id)
-    if fact.business_domains is None or not fact.scope_known:
+    if fact.business_domains is None:
         return fact
     for _ in range(3):
         with session_factory() as session:

@@ -51,12 +51,49 @@ def test_qwen_rejects_history_as_fact_evidence(monkeypatch):
         )
 
 
-def test_qwen_requires_explicit_scope_fields(monkeypatch):
+def test_qwen_requires_explicit_condition_and_temporal_fields(monkeypatch):
     model = _model(
         monkeypatch, [{"memory": "用户喜欢简洁回复。", "message_ids": ["user"]}], complete=False
     )
     with pytest.raises(ProviderError, match="missing applicability"):
         model.extract(targets=[{"message_id": "user", "role": "user"}], history=[])
+
+
+def test_qwen_accepts_personal_preference_without_scope_known(monkeypatch):
+    fact = {
+        "memory": "用户喜欢吃年糕。",
+        "message_ids": ["user"],
+        "business_domains": None,
+        "project_limited": False,
+        "project_context": None,
+        "temporal_kind": "current",
+        "retention_kind": "long_term",
+        "change_kind": "none",
+        "effective_at": None,
+        "expired_at": None,
+    }
+    model = _model(monkeypatch, [fact], complete=False)
+    facts = model.extract(
+        targets=[{"message_id": "user", "role": "user", "content": "我喜欢吃年糕。"}],
+        history=[],
+    )
+    assert len(facts) == 1
+    assert facts[0].memory == "用户喜欢吃年糕。"
+    assert facts[0].business_domains is None
+    assert facts[0].retention_kind == "long_term"
+
+
+def test_qwen_requires_explicit_retention_kind(monkeypatch):
+    fact = ExtractedFact(memory="用户喜欢简洁回复。", message_ids=["user"]).model_dump(mode="json")
+    fact.pop("retention_kind")
+    model = _model(monkeypatch, [fact], complete=False)
+    with pytest.raises(ProviderError, match="missing applicability"):
+        model.extract(targets=[{"message_id": "user", "role": "user"}], history=[])
+
+
+def test_invalid_retention_kind_is_rejected():
+    with pytest.raises(ValidationError):
+        ExtractedFact(memory="事实", message_ids=["user"], retention_kind="permanent")
 
 
 @pytest.mark.parametrize("scope", [[], [" "], ["x" * 33]])

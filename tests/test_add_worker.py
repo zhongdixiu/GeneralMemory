@@ -102,7 +102,10 @@ def worker_context(engine: Engine) -> Iterator[tuple[TestClient, str]]:
         )
 
 
-def _add(client: TestClient, *, key: str, message_id: str, content: str) -> str:
+def _add(
+    client: TestClient, *, key: str, message_id: str, content: str,
+    occurred_at: str = "2026-09-24T09:00:00+08:00",
+) -> str:
     response = client.post(
         "/api/v1/memories:add",
         headers={
@@ -118,7 +121,7 @@ def _add(client: TestClient, *, key: str, message_id: str, content: str) -> str:
                     "message_id": message_id,
                     "role": "user",
                     "content": content,
-                    "occurred_at": "2026-09-24T09:00:00+08:00",
+                    "occurred_at": occurred_at,
                 }
             ],
         },
