@@ -156,6 +156,50 @@ class MemoryResult(BaseModel):
     event: Literal["ADD"] = "ADD"
 
 
+class SearchRequest(StrictRequestModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    query: str = Field(min_length=1, max_length=8000)
+    limit: int = Field(default=10, ge=1, le=50)
+    agent_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source_system: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("agent_id", "source_system")
+    @classmethod
+    def validate_source_filter(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("source filter must not be blank")
+        return value
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value
+
+
+class SearchResult(BaseModel):
+    id: str
+    memory: str
+    cognitive_type: Literal["fact", "inference"]
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchResult]
+
+
+class ProfileResult(BaseModel):
+    id: str
+    property_key: str | None
+    property_value: dict[str, Any] | list[Any] | str | int | float | bool
+    value_type: str
+    business_domains: list[str] | None
+
+
+class ProfileResponse(BaseModel):
+    profiles: list[ProfileResult]
+
+
 class ErrorInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -377,13 +377,19 @@ def read_profiles(
     *,
     tenant_id: str,
     user_id: str,
-    business_domain: str,
+    business_domain: str | None = None,
     now: datetime | None = None,
 ) -> list[ProfileProperty]:
     from memory_cmic.lifecycle import evidence_group_is_complete
 
     check_time = now or datetime.now(UTC)
-    business_domain = normalize_business_domain(business_domain)
+    business_filter = True
+    if business_domain is not None:
+        business_domain = normalize_business_domain(business_domain)
+        business_filter = or_(
+            ProfileProperty.business_domains.is_(None),
+            ProfileProperty.business_domains.any(business_domain),
+        )
     profiles = session.scalars(
         select(ProfileProperty)
         .where(
@@ -392,10 +398,7 @@ def read_profiles(
             ProfileProperty.status == "active",
             ProfileProperty.effective_at <= check_time,
             or_(ProfileProperty.expired_at.is_(None), ProfileProperty.expired_at > check_time),
-            or_(
-                ProfileProperty.business_domains.is_(None),
-                ProfileProperty.business_domains.any(business_domain),
-            ),
+            business_filter,
         )
         .order_by(
             ProfileProperty.property_key.nulls_last(),

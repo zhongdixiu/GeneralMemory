@@ -16,6 +16,11 @@ from memory_cmic.api_schemas import (
     GovernancePolicyPatch,
     GovernanceRevertRequest,
     GovernanceRunRequest,
+    ProfileResponse,
+    ProfileResult,
+    SearchRequest,
+    SearchResponse,
+    SearchResult,
     TaskResponse,
 )
 from memory_cmic.audit import list_audits, record_audit
@@ -29,6 +34,9 @@ from memory_cmic.db import create_database_engine
 from memory_cmic.governance_state import backfill_history, backfill_user, create_run, ensure_policy
 from memory_cmic.ingest import IngestError, ingest_and_enqueue
 from memory_cmic.models import GovernanceOperation, GovernancePolicy, MemoryTask
+from memory_cmic.profile import read_profiles
+from memory_cmic.providers import ProviderError, QwenFactModel, SiliconFlowEmbedder
+from memory_cmic.retrieval import search_task_memories
 from memory_cmic.settings import Settings
 from memory_cmic.task_results import to_task_response
 
@@ -116,6 +124,61 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         if not auth.can_manage_governance:
             raise ApiError(403, "FORBIDDEN", "governance management permission is required")
         return auth
+
+    def read_user_memory(auth: AuthContext = Depends(authenticate)) -> AuthContext:
+        if not auth.allowed_source_systems:
+            raise ApiError(403, "FORBIDDEN", "an Agent service credential is required")
+        return auth
+
+    @app.post("/api/v1/memories:search", response_model=SearchResponse)
+    def search_user_memories(
+        body: SearchRequest, auth: AuthContext = Depends(read_user_memory),
+    ) -> SearchResponse:
+        if not resolved_settings.dashscope_api_key or not resolved_settings.siliconflow_api_key:
+            raise ApiError(503, "SEARCH_UNAVAILABLE", "search providers are not configured")
+        try:
+            embedder = SiliconFlowEmbedder(
+                api_key=resolved_settings.siliconflow_api_key,
+                base_url=resolved_settings.siliconflow_base_url,
+                model_id=resolved_settings.siliconflow_embedding_model,
+            )
+            with embedder._client:
+                model = QwenFactModel(
+                    api_key=resolved_settings.dashscope_api_key,
+                    base_url=resolved_settings.dashscope_base_url,
+                    model=resolved_settings.dashscope_model,
+                    input_tokens=resolved_settings.extraction_budget.input_tokens,
+                    output_tokens=resolved_settings.extraction_budget.output_tokens,
+                )
+                with model._client, session_factory.begin() as session:
+                    memories = search_task_memories(
+                        session, tenant_id=auth.tenant_id, user_id=body.user_id, query=body.query,
+                        authorized_agent_ids=[], company_ids=[], limit=body.limit,
+                        embedder=embedder, applicability_model=model, validate_user_evidence=True,
+                        agent_id=body.agent_id, source_system=body.source_system,
+                    )
+                    return SearchResponse(results=[
+                        SearchResult(id=m.id, memory=m.content, cognitive_type=m.cognitive_type)
+                        for m in memories
+                    ])
+        except ProviderError as exc:
+            raise ApiError(
+                502, "SEARCH_FAILED", "search provider request or output failed"
+            ) from exc
+
+    @app.get("/api/v1/profiles", response_model=ProfileResponse)
+    def get_profiles(
+        user_id: str = Query(min_length=1, max_length=128),
+        auth: AuthContext = Depends(read_user_memory),
+    ) -> ProfileResponse:
+        with session_factory() as session:
+            return ProfileResponse(profiles=[
+                ProfileResult(
+                    id=p.id, property_key=p.property_key, property_value=p.property_value,
+                    value_type=p.value_type, business_domains=p.business_domains,
+                )
+                for p in read_profiles(session, tenant_id=auth.tenant_id, user_id=user_id)
+            ])
 
     @app.get("/api/v1/audit-logs")
     def get_audit_logs(

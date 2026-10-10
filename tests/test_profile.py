@@ -746,6 +746,22 @@ def test_inference_is_not_promoted_to_explicit_profile(profile_context):
         ) == []
 
 
+def test_profile_rebuild_uses_explicit_facts_from_multiple_agents(profile_context):
+    factory, tenant_id = profile_context
+    contents = ["用户希望邮件回复简洁", "用户希望邮件先列结论"]
+    with factory.begin() as session:
+        for agent, content in zip(("agent_a", "agent_b"), contents, strict=True):
+            _, memory = _fact(session, tenant_id, content)
+            memory.created_by = agent
+        _, inferred = _fact(session, tenant_id, "用户倾向简洁且结论先行的沟通")
+        inferred.cognitive_type = "inference"
+        enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id="user_profile")
+    _drain_profile(factory, tenant_id, VerbatimProfileModel())
+    with factory() as session:
+        rows = read_profiles(session, tenant_id=tenant_id, user_id="user_profile")
+        assert {row.property_value for row in rows} == set(contents)
+
+
 def test_repository_creates_keyless_statements_independently(session):
     rows = [
         create_or_replace_profile(

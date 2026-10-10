@@ -547,7 +547,8 @@ def _infer(
     for memory in bases:
         for source in _valid_sources(session, edges[memory.id]):
             if source.author_type == "user" and source.user_id == task.user_id:
-                source_hashes.add(source.semantic_hash or source.content_hash)
+                # Different submission metadata does not make copied text independent evidence.
+                source_hashes.add(source.content_hash)
                 if source.session_id:
                     source_sessions.add((source.source_system, source.session_id))
     if len(source_hashes) < 2 or len(source_sessions) < 2:

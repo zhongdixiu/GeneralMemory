@@ -247,11 +247,13 @@ def test_merge_keeps_sources_and_admin_can_revert(context, with_ttl):
 
 @pytest.mark.parametrize("ttl_days", [None, 30])
 @pytest.mark.parametrize("domains", [None, ["report"]])
-def test_inference_needs_independent_user_sources(context, ttl_days, domains):
+@pytest.mark.parametrize("agents", [("agent_a", "agent_a"), ("agent_a", "agent_b")])
+def test_inference_needs_independent_user_sources(context, ttl_days, domains, agents):
     factory, tenant = context
     with factory.begin() as session:
         first = seed_fact(session, tenant, "周报写清楚结论")
         second = seed_fact(session, tenant, "周报要列出行动项")
+        first.created_by, second.created_by = agents
         first.business_domains = second.business_domains = domains
         if ttl_days is not None:
             first.expired_at = first.effective_at + timedelta(days=ttl_days)
@@ -604,11 +606,22 @@ def test_deleting_a_basis_stops_using_inference(context):
         assert session.get(MemoryItem, inference_id).status == "invalidated"
 
 
-def test_same_session_restatements_do_not_support_inference(context):
+@pytest.mark.parametrize("copied", [False, True])
+def test_same_session_restatements_do_not_support_inference(context, copied):
     factory, tenant = context
     with factory.begin() as session:
         first = seed_fact(session, tenant, "周报结论清楚", session_id="one_session")
         second = seed_fact(session, tenant, "周报要有行动项", session_id="one_session")
+        if copied:
+            first.created_by, second.created_by = "agent_a", "agent_b"
+            sources = session.scalars(select(SourceRecord).where(
+                SourceRecord.tenant_id == tenant,
+            ).order_by(SourceRecord.created_at, SourceRecord.id)).all()
+            sources[1].raw_content = sources[0].raw_content
+            sources[1].content_hash = sources[0].content_hash
+            sources[0].semantic_hash = "a" * 64
+            sources[1].semantic_hash = "b" * 64
+            sources[1].session_id = "forwarded_session"
         backfill_user(session, tenant, "user_1")
         create_run(session, tenant_id=tenant, user_id="user_1", operator_id="admin")
     model = FakeModel(
