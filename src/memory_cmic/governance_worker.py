@@ -8,10 +8,10 @@ from uuid import uuid4
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from memory_cmic.audit import record_audit
 from memory_cmic.governance_state import lock_user
 from memory_cmic.lifecycle import expire_memory, recheck_downstream
 from memory_cmic.models import (
-    MemoryAuditLog,
     MemoryEmbedding,
     MemoryItem,
     MemoryTask,
@@ -128,23 +128,30 @@ def _model_id(task: MemoryTask, *, legacy_model_id: str | None = None) -> str:
 def _audit_embedding(
     session: Session, task: MemoryTask, *, action: str, model_id: str, content_hash: str
 ) -> None:
-    session.add(
-        MemoryAuditLog(
-            tenant_id=task.tenant_id,
-            action=action,
-            target_type="embedding",
-            target_id=task.target_id,
-            operator_type="system",
-            operator_id="memory_cmic",
-            reason_code="VECTOR_UPSERT" if action != "DELETE" else "VECTOR_DELETE",
-            correlation_id=task.correlation_id,
-            state_after={"model_id": model_id, "content_hash": content_hash}
-            if action != "DELETE"
-            else None,
-            state_before={"model_id": model_id, "content_hash": content_hash}
-            if action == "DELETE"
-            else None,
-        )
+    record_audit(
+        session,
+        tenant_id=task.tenant_id,
+        action=action,
+        target_type="embedding",
+        target_id=task.target_id,
+        operator_type="system",
+        operator_id="memory_cmic",
+        reason_code="VECTOR_UPSERT" if action != "DELETE" else "VECTOR_DELETE",
+        task=task,
+        context={
+            "model_id": model_id,
+            **{
+                key: task.payload[key]
+                for key in ("operation_id", "original_correlation_id")
+                if key in task.payload
+            },
+        },
+        state_after={"model_id": model_id, "content_hash": content_hash}
+        if action != "DELETE"
+        else None,
+        state_before={"model_id": model_id, "content_hash": content_hash}
+        if action == "DELETE"
+        else None,
     )
 
 
@@ -286,6 +293,7 @@ def _apply_task(session: Session, task: MemoryTask) -> None:
             tenant_id=task.tenant_id,
             memory_id=memory.id,
             correlation_id=task.correlation_id,
+            task=task,
         )
     elif task.task_type == "dependency_recheck":
         if task.input_version is None:
@@ -319,6 +327,7 @@ def _apply_task(session: Session, task: MemoryTask) -> None:
                     tenant_id=task.tenant_id,
                     downstream_memory_id=memory_id,
                     correlation_id=task.correlation_id,
+                    task=task,
                 )
     else:
         raise ValueError("unsupported governance task type")

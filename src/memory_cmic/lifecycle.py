@@ -6,12 +6,13 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from memory_cmic.audit import record_audit
 from memory_cmic.governance_state import lock_user, mark_dirty
 from memory_cmic.models import (
-    MemoryAuditLog,
     MemoryEmbedding,
     MemoryEvidence,
     MemoryItem,
+    MemoryTask,
     ProfileProperty,
     SourceRecord,
 )
@@ -70,21 +71,29 @@ def _audit_invalidation(
     new_version: int,
     correlation_id: str | None,
     now: datetime,
+    task: MemoryTask | None = None,
+    reason_code: str = "EVIDENCE_INCOMPLETE",
+    reason: str | None = None,
+    operator_type: str = "system",
+    operator_id: str = "memory_cmic",
+    context: dict | None = None,
 ) -> None:
-    session.add(
-        MemoryAuditLog(
-            tenant_id=tenant_id,
-            action="INVALIDATE",
-            target_type=target_type,
-            target_id=target_id,
-            operator_type="system",
-            operator_id="memory_cmic",
-            reason_code="EVIDENCE_INCOMPLETE",
-            correlation_id=correlation_id,
-            state_before={"status": "active", "version": old_version},
-            state_after={"status": "invalidated", "version": new_version},
-            created_at=now,
-        )
+    record_audit(
+        session,
+        tenant_id=tenant_id,
+        action="INVALIDATE",
+        target_type=target_type,
+        target_id=target_id,
+        operator_type=operator_type,
+        operator_id=operator_id,
+        reason_code=reason_code,
+        reason=reason,
+        task=task,
+        context=context,
+        correlation_id=correlation_id,
+        state_before={"status": "active", "version": old_version},
+        state_after={"status": "invalidated", "version": new_version},
+        created_at=now,
     )
 
 
@@ -134,6 +143,7 @@ def _propagate_memory_change(
     memory: MemoryItem,
     correlation_id: str | None,
     now: datetime,
+    task: MemoryTask | None = None,
 ) -> None:
     from memory_cmic.profile import enqueue_profile_rebuild
 
@@ -173,6 +183,7 @@ def _propagate_memory_change(
             downstream_memory_id=downstream_id,
             correlation_id=correlation_id,
             now=now,
+            task=task,
         )
     for downstream_id in dependent_profiles:
         recheck_downstream(
@@ -181,6 +192,7 @@ def _propagate_memory_change(
             downstream_profile_id=downstream_id,
             correlation_id=correlation_id,
             now=now,
+            task=task,
         )
     if memory.subject_type == "user" and memory.cognitive_type == "fact":
         enqueue_profile_rebuild(
@@ -197,6 +209,7 @@ def recheck_downstream(
     downstream_profile_id: str | None = None,
     correlation_id: str | None = None,
     now: datetime | None = None,
+    task: MemoryTask | None = None,
 ) -> bool:
     if (downstream_memory_id is None) == (downstream_profile_id is None):
         raise ValueError("exactly one downstream id is required")
@@ -248,6 +261,7 @@ def recheck_downstream(
         new_version=downstream.version,
         correlation_id=correlation_id,
         now=check_time,
+        task=task,
     )
     enqueue_task(
         session,
@@ -273,6 +287,7 @@ def recheck_downstream(
             memory=downstream,
             correlation_id=correlation_id,
             now=check_time,
+            task=task,
         )
     return False
 
@@ -322,20 +337,19 @@ def update_or_invalidate_source(
         if edge.status == "active":
             edge.status = "invalidated"
             edge.invalidated_at = source.updated_at
-    session.add(
-        MemoryAuditLog(
-            tenant_id=tenant_id,
-            action="INVALIDATE" if status != "active" else "UPDATE",
-            target_type="source",
-            target_id=source.id,
-            operator_type="system",
-            operator_id="memory_cmic",
-            reason_code="SOURCE_STATUS_CHANGED",
-            correlation_id=correlation_id,
-            state_before={"status": old_status, "version": old_version},
-            state_after={"status": source.status, "version": source.version},
-            created_at=source.updated_at,
-        )
+    record_audit(
+        session,
+        tenant_id=tenant_id,
+        action="INVALIDATE" if status != "active" else "UPDATE",
+        target_type="source",
+        target_id=source.id,
+        operator_type="system",
+        operator_id="memory_cmic",
+        reason_code="SOURCE_STATUS_CHANGED",
+        correlation_id=correlation_id,
+        state_before={"status": old_status, "version": old_version},
+        state_after={"status": source.status, "version": source.version},
+        created_at=source.updated_at,
     )
     enqueue_task(
         session,
@@ -375,6 +389,12 @@ def invalidate_memory(
     memory_id: str,
     correlation_id: str | None = None,
     now: datetime | None = None,
+    task: MemoryTask | None = None,
+    reason_code: str = "EVIDENCE_INCOMPLETE",
+    reason: str | None = None,
+    operator_type: str = "system",
+    operator_id: str = "memory_cmic",
+    context: dict | None = None,
 ) -> MemoryItem:
     memory = session.get(MemoryItem, memory_id)
     if memory is None or memory.tenant_id != tenant_id:
@@ -397,12 +417,19 @@ def invalidate_memory(
             new_version=memory.version,
             correlation_id=correlation_id,
             now=check_time,
+            task=task,
+            reason_code=reason_code,
+            reason=reason,
+            operator_type=operator_type,
+            operator_id=operator_id,
+            context=context,
         )
         _propagate_memory_change(
             session,
             memory=memory,
             correlation_id=correlation_id,
             now=check_time,
+            task=task,
         )
     return memory
 
@@ -410,6 +437,7 @@ def invalidate_memory(
 def govern_memory(
     session: Session, *, memory: MemoryItem, status: str, reason_code: str,
     correlation_id: str | None, conflict_group_id: str | None = None,
+    task: MemoryTask | None = None, reason: str | None = None,
 ) -> None:
     if status not in {"invalidated", "disputed"}:
         raise ValueError("invalid governance status")
@@ -423,15 +451,28 @@ def govern_memory(
     memory.conflict_group_id = conflict_group_id
     memory.invalidated_at = now if status == "invalidated" else None
     memory.updated_at = now
-    session.add(MemoryAuditLog(
-        tenant_id=memory.tenant_id, action="INVALIDATE", target_type="memory",
-        target_id=memory.id, operator_type="system", operator_id="memory_cmic",
-        reason_code=reason_code, correlation_id=correlation_id,
+    record_audit(
+        session,
+        tenant_id=memory.tenant_id,
+        action="UPDATE" if status == "disputed" else "INVALIDATE",
+        target_type="memory",
+        target_id=memory.id,
+        operator_type="system",
+        operator_id="memory_cmic",
+        reason_code=reason_code,
+        correlation_id=correlation_id,
+        task=task,
+        reason=reason,
         state_before=before,
-        state_after={"status": status, "version": memory.version,
-                     "conflict_group_id": conflict_group_id},
-    ))
-    _propagate_memory_change(session, memory=memory, correlation_id=correlation_id, now=now)
+        state_after={
+            "status": status,
+            "version": memory.version,
+            "conflict_group_id": conflict_group_id,
+        },
+    )
+    _propagate_memory_change(
+        session, memory=memory, correlation_id=correlation_id, now=now, task=task
+    )
 
 
 def expire_memory(
@@ -441,6 +482,7 @@ def expire_memory(
     memory_id: str,
     correlation_id: str | None = None,
     now: datetime | None = None,
+    task: MemoryTask | None = None,
 ) -> MemoryItem:
     check_time = now or datetime.now(UTC)
     memory = session.get(MemoryItem, memory_id)
@@ -457,25 +499,26 @@ def expire_memory(
     memory.status = "expired"
     memory.version += 1
     memory.updated_at = check_time
-    session.add(
-        MemoryAuditLog(
-            tenant_id=tenant_id,
-            action="EXPIRE",
-            target_type="memory",
-            target_id=memory.id,
-            operator_type="system",
-            operator_id="memory_cmic",
-            reason_code="TTL_EXPIRED",
-            correlation_id=correlation_id,
-            state_before={"status": "active", "version": old_version},
-            state_after={"status": "expired", "version": memory.version},
-            created_at=check_time,
-        )
+    record_audit(
+        session,
+        tenant_id=tenant_id,
+        action="EXPIRE",
+        target_type="memory",
+        target_id=memory.id,
+        operator_type="system",
+        operator_id="memory_cmic",
+        reason_code="TTL_EXPIRED",
+        task=task,
+        correlation_id=correlation_id,
+        state_before={"status": "active", "version": old_version},
+        state_after={"status": "expired", "version": memory.version},
+        created_at=check_time,
     )
     _propagate_memory_change(
         session,
         memory=memory,
         correlation_id=correlation_id,
         now=check_time,
+        task=task,
     )
     return memory

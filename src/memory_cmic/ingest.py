@@ -12,10 +12,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from memory_cmic.api_schemas import AddRequest, Message
+from memory_cmic.audit import record_audit
 from memory_cmic.auth import AuthContext
 from memory_cmic.models import (
     ConversationSession,
-    MemoryAuditLog,
     MemoryTask,
     MemoryTaskSource,
     SourceRecord,
@@ -137,6 +137,7 @@ def _get_or_create_source(
     request: AddRequest,
     auth: AuthContext,
     correlation_id: str,
+    task_id: str,
 ) -> tuple[SourceRecord, bool]:
     values = _source_values(message, request, auth)
     existing = session.scalars(
@@ -160,18 +161,19 @@ def _get_or_create_source(
     source = SourceRecord(**values)
     session.add(source)
     session.flush()
-    session.add(
-        MemoryAuditLog(
-            tenant_id=auth.tenant_id,
-            action="INSERT",
-            target_type="source",
-            target_id=source.id,
-            operator_type="agent",
-            operator_id=auth.caller_agent_id,
-            reason_code="CONVERSATION_INGESTED",
-            correlation_id=correlation_id,
-            state_after={"message_id": message.message_id, "version": source.version},
-        )
+    record_audit(
+        session,
+        tenant_id=auth.tenant_id,
+        action="INSERT",
+        target_type="source",
+        target_id=source.id,
+        operator_type="agent",
+        operator_id=auth.caller_agent_id,
+        reason_code="CONVERSATION_INGESTED",
+        correlation_id=correlation_id,
+        task_id=task_id,
+        state_after={"message_id": message.message_id, "version": source.version,
+                     "status": source.status},
     )
     return source, True
 
@@ -243,7 +245,7 @@ def ingest_and_enqueue(
         user_id=request.user_id,
     )
     task_id = f"tsk_{uuid4().hex}"
-    correlation_id = request_id[:64]
+    correlation_id = uuid4().hex
     task = MemoryTask(
         id=task_id,
         tenant_id=auth.tenant_id,
@@ -258,7 +260,7 @@ def ingest_and_enqueue(
         user_id=request.user_id,
         session_id=request.session_id,
         batch_seq=batch_seq,
-        payload={"config_version": 1},
+        payload={"config_version": 1, "request_id": request_id},
         max_attempts=5,
     )
     session.add(task)
@@ -272,6 +274,7 @@ def ingest_and_enqueue(
                 request=request,
                 auth=auth,
                 correlation_id=correlation_id,
+                task_id=task.id,
             )
             session.add(
                 MemoryTaskSource(
@@ -284,18 +287,18 @@ def ingest_and_enqueue(
                 )
             )
 
-    session.add(
-        MemoryAuditLog(
-            tenant_id=auth.tenant_id,
-            action="INSERT",
-            target_type="task",
-            target_id=task.id,
-            operator_type="agent",
-            operator_id=auth.caller_agent_id,
-            reason_code="FACT_EXTRACTION_ENQUEUED",
-            correlation_id=correlation_id,
-            state_after={"status": "pending", "batch_seq": batch_seq},
-        )
+    record_audit(
+        session,
+        tenant_id=auth.tenant_id,
+        action="INSERT",
+        target_type="task",
+        target_id=task.id,
+        operator_type="agent",
+        operator_id=auth.caller_agent_id,
+        reason_code="FACT_EXTRACTION_ENQUEUED",
+        correlation_id=correlation_id,
+        task=task,
+        state_after={"status": "pending", "batch_seq": batch_seq},
     )
     session.flush()
     return IngestReceipt(task=task, replayed=False)

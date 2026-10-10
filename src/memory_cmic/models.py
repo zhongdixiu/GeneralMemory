@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -704,7 +705,8 @@ class MemoryAuditLog(Base):
             name="ck_audit_action",
         ),
         CheckConstraint(
-            "target_type IN ('source', 'memory', 'evidence', 'profile', 'embedding', 'task')",
+            "target_type IN ('source', 'memory', 'evidence', 'profile', 'embedding', 'task', "
+            "'governance_policy')",
             name="ck_audit_target_type",
         ),
         CheckConstraint(
@@ -723,8 +725,10 @@ class MemoryAuditLog(Base):
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(512))
     correlation_id: Mapped[str | None] = mapped_column(String(64))
-    state_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    state_after: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    state_before: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    state_after: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
@@ -743,6 +747,17 @@ Index(
     MemoryAuditLog.correlation_id,
     MemoryAuditLog.created_at,
 )
+Index("ix_audit_task", MemoryAuditLog.tenant_id, MemoryAuditLog.task_id, MemoryAuditLog.id)
+Index(
+    "ix_audit_timeline", MemoryAuditLog.tenant_id,
+    MemoryAuditLog.created_at.desc(), MemoryAuditLog.id.desc(),
+)
+
+
+@event.listens_for(MemoryAuditLog, "before_update")
+@event.listens_for(MemoryAuditLog, "before_delete")
+def _prevent_audit_rewrite(mapper, connection, target) -> None:
+    raise ValueError("audit logs are append-only")
 
 
 class ExternalEntityMapping(Base):

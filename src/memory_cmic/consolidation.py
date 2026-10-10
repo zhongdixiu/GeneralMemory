@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from memory_cmic.audit import record_audit
 from memory_cmic.extraction_input import input_size
 from memory_cmic.governance_state import lock_user, schedule_due
 from memory_cmic.lifecycle import evidence_group_is_complete, govern_memory, invalidate_memory
@@ -21,7 +22,6 @@ from memory_cmic.models import (
     GovernancePending,
     GovernancePolicy,
     GovernanceSubjectState,
-    MemoryAuditLog,
     MemoryEvidence,
     MemoryItem,
     MemoryTask,
@@ -365,18 +365,41 @@ def _record(
         details=details,
     )
     session.add(op)
-    session.add(
-        MemoryAuditLog(
-            tenant_id=task.tenant_id,
-            action="UPDATE",
-            target_type="task",
-            target_id=task.id,
-            operator_type="system",
-            operator_id="memory_cmic",
-            reason_code=f"GOVERNANCE_{kind.upper()}",
-            correlation_id=task.correlation_id,
-            state_after={"operation_id": op.id, **details},
-        )
+    if kind in {"invalidate", "suspected_stale"}:
+        # Actual invalidation is audited by lifecycle; suspicion is only a decision.
+        return op
+    target_id = details.get("winner_id") if kind == "merge" else memory_id
+    memory = session.get(MemoryItem, target_id) if target_id else None
+    before, after = None, None
+    if kind == "merge":
+        before = {"evidence_count": details["evidence_count_before"]}
+        after = {"evidence_count": details["evidence_count_after"]}
+    elif kind == "inference":
+        after = {
+            "content": memory.content,
+            "status": memory.status,
+            "version": memory.version,
+            "effective_at": memory.effective_at.isoformat(),
+            "expired_at": memory.expired_at.isoformat() if memory.expired_at else None,
+        }
+    record_audit(
+        session,
+        tenant_id=task.tenant_id,
+        action="INSERT" if kind == "inference" else "UPDATE",
+        target_type="memory" if target_id else "task",
+        target_id=target_id or task.id,
+        operator_type="system",
+        operator_id="memory_cmic",
+        reason_code=f"GOVERNANCE_{kind.upper()}",
+        task=task,
+        reason=details.get("reason"),
+        context={
+            "operation_id": op.id,
+            "related_memory_id": memory_id,
+            "source_ids": details.get("source_ids", []),
+        },
+        state_before=before,
+        state_after=after,
     )
     return op
 
@@ -416,6 +439,11 @@ def _merge(
         ):
             continue
         copied_ids = []
+        evidence_count = session.scalar(select(func.count()).select_from(MemoryEvidence).where(
+            MemoryEvidence.tenant_id == task.tenant_id,
+            MemoryEvidence.downstream_memory_id == winner.id,
+            MemoryEvidence.status == "active",
+        ))
         groups = {}
         for edge in edges[loser.id]:
             groups.setdefault(edge.evidence_group_id, []).append(edge)
@@ -448,6 +476,8 @@ def _merge(
             status="invalidated",
             reason_code="GOVERNANCE_MERGED",
             correlation_id=task.correlation_id,
+            task=task,
+            reason=reason or None,
         )
         scope_after, _ = _evidence_snapshot(session, _scope_memories(session, winner))
         op = _record(
@@ -463,6 +493,8 @@ def _merge(
                 "winner_version": winner.version,
                 "loser_version": loser.version,
                 "copied_edge_ids": copied_ids,
+                "evidence_count_before": evidence_count,
+                "evidence_count_after": evidence_count + len(copied_ids),
                 "source_ids": sorted(
                     {
                         e.upstream_source_id
@@ -693,10 +725,6 @@ def _invalidate(
         for op in rejected
     ):
         return None
-    invalidate_memory(
-        session, tenant_id=task.tenant_id, memory_id=target.id, correlation_id=task.correlation_id
-    )
-    scope_after, _ = _evidence_snapshot(session, _scope_memories(session, target))
     op = _record(
         session,
         task,
@@ -705,13 +733,19 @@ def _invalidate(
         {
             "memory_id": target.id,
             "old_content": target.content,
-            "version": target.version,
             "source_id": source.id,
             "quote": proposal.quote,
             "reason": proposal.reason,
-            "scope_after": scope_after,
         },
     )
+    invalidate_memory(
+        session, tenant_id=task.tenant_id, memory_id=target.id,
+        correlation_id=task.correlation_id, task=task,
+        reason_code="GOVERNANCE_INVALIDATE", reason=proposal.reason,
+        context={"operation_id": op.id},
+    )
+    scope_after, _ = _evidence_snapshot(session, _scope_memories(session, target))
+    op.details = {**op.details, "version": target.version, "scope_after": scope_after}
     return {"operation_id": op.id, "kind": "invalidate", "memory_ids": [target.id]}
 
 
@@ -1047,6 +1081,13 @@ def revert_operation(
     ):
         raise RevertConflict("memory changed since the operation")
     now = datetime.now(UTC)
+    original_task = session.get(MemoryTask, operation.task_id)
+    correlation_id = uuid4().hex
+    before = {"status": memory.status, "version": memory.version}
+    audit_context = {
+        "operation_id": operation.id,
+        "original_correlation_id": original_task.correlation_id if original_task else None,
+    }
     if operation.kind == "inference":
         if memory.status != "active":
             raise RevertConflict("inference is no longer active")
@@ -1054,7 +1095,13 @@ def revert_operation(
             session,
             tenant_id=operation.tenant_id,
             memory_id=memory.id,
-            correlation_id=operation.task_id,
+            correlation_id=correlation_id,
+            task=original_task,
+            reason_code="GOVERNANCE_REVERTED",
+            reason=reason,
+            operator_type="admin",
+            operator_id=operator_id,
+            context=audit_context,
         )
         rejection = {
             "kind": "inference",
@@ -1104,9 +1151,30 @@ def revert_operation(
                 or _roots(session, memory.id) != details["loser_roots"]
             ):
                 raise RevertConflict("original evidence changed")
+            evidence_count = session.scalar(select(func.count()).select_from(MemoryEvidence).where(
+                MemoryEvidence.tenant_id == operation.tenant_id,
+                MemoryEvidence.downstream_memory_id == winner.id,
+                MemoryEvidence.status == "active",
+            ))
             for edge in copied:
                 edge.status = "invalidated"
                 edge.invalidated_at = now
+            record_audit(
+                session,
+                tenant_id=operation.tenant_id,
+                action="UPDATE",
+                target_type="memory",
+                target_id=winner.id,
+                reason_code="GOVERNANCE_REVERTED",
+                reason=reason,
+                operator_type="admin",
+                operator_id=operator_id,
+                task=original_task,
+                correlation_id=correlation_id,
+                context=audit_context,
+                state_before={"evidence_count": evidence_count},
+                state_after={"evidence_count": evidence_count - len(copied)},
+            )
             rejection = {
                 "kind": "merge",
                 "winner_id": winner.id,
@@ -1165,8 +1233,8 @@ def revert_operation(
                 "target_id": memory.id,
                 "input_version": memory.version,
                 "idempotency_key": f"vector_upsert:memory:{memory.id}:v{memory.version}:{model_id}",
-                "correlation_id": operation.task_id,
-                "payload": {"model_id": model_id},
+                "correlation_id": correlation_id,
+                "payload": {"model_id": model_id, **audit_context},
                 "priority": 50,
             },
         )
@@ -1185,8 +1253,9 @@ def revert_operation(
         },
     )
     session.add(feedback)
-    session.add(
-        MemoryAuditLog(
+    if operation.kind != "inference":
+        record_audit(
+            session,
             tenant_id=operation.tenant_id,
             action="UPDATE",
             target_type="memory",
@@ -1195,12 +1264,13 @@ def revert_operation(
             operator_id=operator_id,
             reason_code="GOVERNANCE_REVERTED",
             reason=reason,
-            correlation_id=operation.task_id,
+            correlation_id=correlation_id,
+            task=original_task,
+            context=audit_context,
+            state_before=before,
             state_after={
-                "operation_id": operation.id,
                 "version": memory.version,
                 "status": memory.status,
             },
         )
-    )
     return feedback

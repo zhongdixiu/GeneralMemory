@@ -231,12 +231,12 @@ def test_unresolved_historical_interval_is_skipped(worker_context, engine):
         assert task.status == "succeeded"
         assert task.result_json == []
         assert task.payload["execution"]["diagnostics"][0]["code"] == "TIME_UNRESOLVED"
-        assert session.scalars(
+        assert not session.scalars(
             select(MemoryAuditLog).where(
                 MemoryAuditLog.tenant_id == tenant_id,
                 MemoryAuditLog.reason_code == "TIME_UNRESOLVED",
             )
-        ).one()
+        ).all()
 
 
 def test_explicit_correction_invalidates_fact_and_derived_profile(worker_context, engine):
@@ -314,6 +314,13 @@ def test_dispute_and_explicit_clarification(worker_context, engine):
         assert len({m.conflict_group_id for m in memories}) == 1
         assert memories[0].conflict_group_id is not None
         assert session.get(MemoryTask, task_id).result_json == []
+        event = session.scalars(select(MemoryAuditLog).where(
+            MemoryAuditLog.tenant_id == tenant_id,
+            MemoryAuditLog.reason_code == "FACT_DISPUTED",
+        )).one()
+        assert event.action == "UPDATE" and event.task_id == task_id
+        assert event.state_before["status"] == "active"
+        assert event.state_after["status"] == "disputed"
     _add(
         client,
         key="birthday3",
@@ -655,7 +662,7 @@ def test_removed_execution_payload_after_evidence_commit_stays_partial(worker_co
             select(MemoryAuditLog).where(
                 MemoryAuditLog.tenant_id == tenant_id,
                 MemoryAuditLog.reason_code == "FACT_EVIDENCE_ADDED",
-                MemoryAuditLog.state_after["task_id"].astext == task_id,
+                MemoryAuditLog.task_id == task_id,
             )
         ).one()
 

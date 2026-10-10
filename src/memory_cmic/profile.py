@@ -12,10 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from memory_cmic.audit import record_audit
 from memory_cmic.extraction_input import input_size
 from memory_cmic.governance_state import lock_user
 from memory_cmic.models import (
-    MemoryAuditLog,
     MemoryEvidence,
     MemoryItem,
     MemoryTask,
@@ -200,6 +200,12 @@ def enqueue_profile_rebuild(
         .limit(1)
     ).first()
     if pending is not None:
+        pending.correlation_id = pending.correlation_id or uuid4().hex
+        triggers = list((pending.payload or {}).get("trigger_correlation_ids", []))
+        for trigger in (pending.correlation_id, correlation_id):
+            if trigger and trigger not in triggers:
+                triggers.append(trigger)
+        pending.payload = {**(pending.payload or {}), "trigger_correlation_ids": triggers}
         return pending
     watermark, _ = _snapshot(session, tenant_id, user_id)
     return enqueue_task(
@@ -212,8 +218,9 @@ def enqueue_profile_rebuild(
             "target_id": user_id,
             "user_id": user_id,
             "idempotency_key": f"profile_rebuild:v3:{user_id}:{watermark}",
-            "correlation_id": correlation_id,
-            "payload": {"watermark": watermark},
+            "correlation_id": correlation_id or uuid4().hex,
+            "payload": {"watermark": watermark,
+                        "trigger_correlation_ids": [correlation_id] if correlation_id else []},
             "priority": 50,
         },
     )
@@ -302,19 +309,18 @@ def _replace(
         for edge in old_edges:
             edge.status = "invalidated"
             edge.invalidated_at = now
-        session.add(
-            MemoryAuditLog(
-                tenant_id=task.tenant_id,
-                action="INVALIDATE",
-                target_type="profile",
-                target_id=current.id,
-                operator_type="system",
-                operator_id="memory_cmic",
-                reason_code="PROFILE_REBUILT",
-                correlation_id=task.correlation_id,
-                state_before={"version": current.version - 1},
-                state_after={"version": current.version, "status": "invalidated"},
-            )
+        record_audit(
+            session,
+            tenant_id=task.tenant_id,
+            action="INVALIDATE",
+            target_type="profile",
+            target_id=current.id,
+            operator_type="system",
+            operator_id="memory_cmic",
+            reason_code="PROFILE_REBUILT",
+            task=task,
+            state_before={"version": current.version - 1, "status": "active"},
+            state_after={"version": current.version, "status": "invalidated"},
         )
         session.flush()
     for identity, (value, basis) in remaining.items():
@@ -346,23 +352,23 @@ def _replace(
                     evidence_snippet=memory.content[:512],
                 )
             )
-        session.add(
-            MemoryAuditLog(
-                tenant_id=task.tenant_id,
-                action="INSERT",
-                target_type="profile",
-                target_id=profile.id,
-                operator_type="system",
-                operator_id="memory_cmic",
-                reason_code="PROFILE_REBUILT",
-                correlation_id=task.correlation_id,
-                state_after={
-                    "key": profile.property_key,
-                    "value": value,
-                    "basis_ids": [m.id for m in basis],
-                    "version": profile.version,
-                },
-            )
+        record_audit(
+            session,
+            tenant_id=task.tenant_id,
+            action="INSERT",
+            target_type="profile",
+            target_id=profile.id,
+            operator_type="system",
+            operator_id="memory_cmic",
+            reason_code="PROFILE_REBUILT",
+            task=task,
+            context={"basis_ids": [m.id for m in basis]},
+            state_after={
+                "key": profile.property_key,
+                "value": value,
+                "version": profile.version,
+                "status": profile.status,
+            },
         )
 
 

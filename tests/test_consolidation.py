@@ -286,6 +286,16 @@ def test_inference_needs_independent_user_sources(context, ttl_days, domains):
         assert inferred[0].status == "active"
         assert inferred[0].business_domains == domains
         assert inferred[0].expired_at == expiry
+        event = session.scalars(select(MemoryAuditLog).where(
+            MemoryAuditLog.tenant_id == tenant,
+            MemoryAuditLog.target_type == "memory", MemoryAuditLog.target_id == inferred[0].id,
+            MemoryAuditLog.reason_code == "GOVERNANCE_INFERENCE",
+        )).one()
+        assert event.action == "INSERT" and event.task_id is not None
+        assert event.reason == "两次独立周报要求"
+        assert event.state_after["status"] == "active"
+        assert "basis" not in event.state_after
+        assert "operation_id" in event.context
         derives = session.scalars(
             select(MemoryEvidence).where(
                 MemoryEvidence.tenant_id == tenant,
@@ -424,6 +434,15 @@ def test_rejected_inference_paraphrase_waits_for_new_evidence(context):
             reason="归纳不准确",
             model_id="test-model",
         )
+        event = session.scalars(select(MemoryAuditLog).where(
+            MemoryAuditLog.tenant_id == tenant,
+            MemoryAuditLog.target_id == operation.memory_id,
+            MemoryAuditLog.reason_code == "GOVERNANCE_REVERTED",
+        )).one()
+        assert event.action == "INVALIDATE" and event.reason == "归纳不准确"
+        assert event.operator_type == "admin" and event.operator_id == "admin"
+        assert event.context["operation_id"] == operation.id
+        assert event.correlation_id != operation.task_id
         backfill_user(session, tenant, "user_1")
         create_run(session, tenant_id=tenant, user_id="user_1", operator_id="admin")
     paraphrase = FakeModel(
@@ -520,6 +539,12 @@ def test_policy_and_manual_run_are_tenant_admin_only(context):
             .generation
             == 1
         )
+        event = session.scalars(select(MemoryAuditLog).where(
+            MemoryAuditLog.tenant_id == tenant,
+            MemoryAuditLog.reason_code == "GOVERNANCE_POLICY_CHANGED",
+        )).one()
+        assert event.target_type == "governance_policy" and event.target_id == tenant
+        assert event.correlation_id is not None
 
 
 def test_different_projects_never_enter_same_model_window(context):

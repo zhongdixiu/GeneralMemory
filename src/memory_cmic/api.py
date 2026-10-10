@@ -18,6 +18,7 @@ from memory_cmic.api_schemas import (
     GovernanceRunRequest,
     TaskResponse,
 )
+from memory_cmic.audit import list_audits, record_audit
 from memory_cmic.auth import (
     AuthContext,
     AuthenticationError,
@@ -27,7 +28,7 @@ from memory_cmic.consolidation import RevertConflict, revert_operation
 from memory_cmic.db import create_database_engine
 from memory_cmic.governance_state import backfill_history, backfill_user, create_run, ensure_policy
 from memory_cmic.ingest import IngestError, ingest_and_enqueue
-from memory_cmic.models import GovernanceOperation, GovernancePolicy, MemoryAuditLog, MemoryTask
+from memory_cmic.models import GovernanceOperation, GovernancePolicy, MemoryTask
 from memory_cmic.settings import Settings
 from memory_cmic.task_results import to_task_response
 
@@ -116,6 +117,32 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             raise ApiError(403, "FORBIDDEN", "governance management permission is required")
         return auth
 
+    @app.get("/api/v1/audit-logs")
+    def get_audit_logs(
+        target_type: str | None = None, target_id: str | None = None,
+        correlation_id: str | None = None, task_id: str | None = None,
+        reason_code: str | None = None, include_technical: bool = False,
+        include_details: bool = False, limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        auth: AuthContext = Depends(manage_governance),
+    ) -> dict:
+        if target_id is not None and target_type is None:
+            raise ApiError(422, "INVALID_AUDIT_FILTER", "target_id requires target_type")
+        if target_type is not None and target_type not in {
+            "source", "memory", "evidence", "profile", "embedding", "task", "governance_policy"
+        }:
+            raise ApiError(422, "INVALID_AUDIT_FILTER", "invalid target_type")
+        if include_details and not auth.can_read_audit_content:
+            raise ApiError(403, "FORBIDDEN", "audit content permission is required")
+        with session_factory() as session:
+            return list_audits(
+                session, tenant_id=auth.tenant_id, target_type=target_type,
+                target_id=target_id, correlation_id=correlation_id, task_id=task_id,
+                reason_code=reason_code, include_technical=include_technical,
+                include_details=include_details, can_read_content=auth.can_read_audit_content,
+                limit=limit, offset=offset,
+            )
+
     def policy_body(policy: GovernancePolicy) -> dict:
         return {
             "auto_enabled": policy.auto_enabled,
@@ -166,13 +193,19 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 policy.version += 1
                 if changes.get("auto_enabled") and not before["auto_enabled"]:
                     backfill_history(session, auth.tenant_id)
-                session.add(MemoryAuditLog(
-                    tenant_id=auth.tenant_id, action="UPDATE", target_type="task",
-                    target_id=auth.tenant_id, operator_type="admin",
+                record_audit(
+                    session,
+                    tenant_id=auth.tenant_id,
+                    action="UPDATE",
+                    target_type="governance_policy",
+                    target_id=auth.tenant_id,
+                    operator_type="admin",
                     operator_id=auth.caller_agent_id,
                     reason_code="GOVERNANCE_POLICY_CHANGED",
-                    state_before=before, state_after=policy_body(policy),
-                ))
+                    correlation_id=uuid4().hex,
+                    state_before=before,
+                    state_after=policy_body(policy),
+                )
             return policy_body(policy)
 
     @app.post("/api/v1/governance/runs", status_code=202)
@@ -253,7 +286,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             .offset(offset).limit(limit)).all()
             return {"operations": [
                 {"id": op.id, "kind": op.kind, "memory_id": op.memory_id,
-                 "details": op.details, "created_at": op.created_at,
+                 "details": op.details if auth.can_read_audit_content else None,
+                 "created_at": op.created_at,
                  "reverted_at": op.reverted_at}
                 for op in operations
             ]}

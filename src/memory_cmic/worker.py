@@ -17,13 +17,13 @@ from uuid import uuid4
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from memory_cmic.audit import record_audit
 from memory_cmic.business_scenes import normalize_fact_scenes
 from memory_cmic.db import create_database_engine
 from memory_cmic.extraction_input import ExtractionBudget, build_slices, input_size, split_slice
 from memory_cmic.governance_state import mark_dirty
 from memory_cmic.lifecycle import govern_memory
 from memory_cmic.models import (
-    MemoryAuditLog,
     MemoryEmbedding,
     MemoryEvidence,
     MemoryItem,
@@ -332,7 +332,13 @@ def _add_evidence(
     task_input: TaskInput,
     fact: ExtractedFact,
     memory_id: str,
-) -> None:
+    initial: bool = False,
+) -> str:
+    evidence_count = session.scalar(select(func.count()).select_from(MemoryEvidence).where(
+        MemoryEvidence.tenant_id == task_input.tenant_id,
+        MemoryEvidence.downstream_memory_id == memory_id,
+        MemoryEvidence.status == "active",
+    )) if not initial else 0
     group_id = f"evg_{uuid4().hex}"
     for message_id in dict.fromkeys(fact.message_ids):
         source_id = task_input.source_ids[message_id]
@@ -363,24 +369,25 @@ def _add_evidence(
         )
 
     task = session.get(MemoryTask, task_input.task_id)
-    session.add(
-        MemoryAuditLog(
+    if not initial:
+        record_audit(
+            session,
             tenant_id=task_input.tenant_id,
             action="UPDATE",
             target_type="memory",
             target_id=memory_id,
-            operator_type="agent",
-            operator_id=task_input.caller_agent_id,
             reason_code="FACT_EVIDENCE_ADDED",
-            correlation_id=task.correlation_id,
-            state_after={
+            task=task,
+            state_before={"evidence_count": evidence_count},
+            state_after={"evidence_count": evidence_count + len(set(fact.message_ids))},
+            context={
                 "evidence_group_id": group_id,
                 "task_id": task_input.task_id,
                 "message_ids": fact.message_ids,
             },
         )
-    )
     mark_dirty(session, session.get(MemoryItem, memory_id), from_add=True)
+    return group_id
 
 
 def _scope_filters(fact: ExtractedFact):
@@ -752,6 +759,8 @@ def _commit_results(
                 if governance.action == "DISPUTE"
                 else "FACT_SUPERSEDED",
                 correlation_id=task.correlation_id,
+                task=task,
+                reason=governance.justification_quote or None,
                 conflict_group_id=conflict_group,
             )
             mark_dirty(session, old, from_add=True)
@@ -800,7 +809,9 @@ def _commit_results(
         )
         session.add(memory)
         session.flush()
-        _add_evidence(session, task_input=task_input, fact=fact, memory_id=memory.id)
+        group_id = _add_evidence(
+            session, task_input=task_input, fact=fact, memory_id=memory.id, initial=True
+        )
         if memory.status == "active" and (
             memory.expired_at is None or memory.expired_at > datetime.now(UTC)
         ):
@@ -814,22 +825,27 @@ def _commit_results(
                 )
             )
             results.append({"id": memory.id, "memory": fact.memory, "event": "ADD"})
-        session.add(
-            MemoryAuditLog(
-                tenant_id=task_input.tenant_id,
-                action="INSERT",
-                target_type="memory",
-                target_id=memory.id,
-                operator_type="agent",
-                operator_id=task_input.caller_agent_id,
-                reason_code="FACT_EXTRACTED",
-                correlation_id=task.correlation_id,
-                state_after={
-                    "content": fact.memory,
-                    "status": memory.status,
-                    "governance_action": governance.action,
-                },
-            )
+        record_audit(
+            session,
+            tenant_id=task_input.tenant_id,
+            action="INSERT",
+            target_type="memory",
+            target_id=memory.id,
+            reason_code="FACT_EXTRACTED",
+            task=task,
+            context={
+                "evidence_group_id": group_id,
+                "message_ids": fact.message_ids,
+                "governance_action": governance.action,
+            },
+            state_after={
+                "content": fact.memory,
+                "status": memory.status,
+                "version": memory.version,
+                "evidence_count": len(set(fact.message_ids)),
+                "effective_at": memory.effective_at.isoformat(),
+                "expired_at": memory.expired_at.isoformat() if memory.expired_at else None,
+            },
         )
     if decisions:
         session.flush()
@@ -1143,20 +1159,6 @@ def _process_task(
             execution.pop("prepared_slice", None)
             execution["changed"] = execution["changed"] or bool(decisions)
             execution["diagnostics"] = [*execution["diagnostics"], *skipped]
-            for diagnostic in skipped:
-                session.add(
-                    MemoryAuditLog(
-                        tenant_id=tenant_id,
-                        action="UPDATE",
-                        target_type="source",
-                        target_id=task_input.source_ids[diagnostic["message_ids"][0]],
-                        operator_type="system",
-                        operator_id="memory_cmic",
-                        reason_code=diagnostic["code"],
-                        correlation_id=task.correlation_id,
-                        state_after=diagnostic,
-                    )
-                )
             _save_execution(task, execution)
             task.result_json = [
                 result

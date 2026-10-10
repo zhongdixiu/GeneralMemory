@@ -123,6 +123,39 @@ def test_add_persists_source_task_and_replays_idempotently(
         ) == 1
 
 
+def test_reused_request_id_does_not_merge_processing_chains(api_context, engine):
+    client, tenant_id = api_context
+    request_id = "same-prefix-" + "a" * 100
+    first = client.post(
+        "/api/v1/memories:add",
+        json=_body(message_id="first"),
+        headers={**_headers(key="first"), "X-Request-ID": request_id},
+    )
+    second = client.post(
+        "/api/v1/memories:add",
+        json=_body(message_id="second"),
+        headers={**_headers(key="second"), "X-Request-ID": request_id},
+    )
+    replay = client.post(
+        "/api/v1/memories:add",
+        json=_body(message_id="first"),
+        headers={**_headers(key="first"), "X-Request-ID": "different-request"},
+    )
+    assert first.status_code == second.status_code == replay.status_code == 202
+    assert first.json()["task_id"] == replay.json()["task_id"]
+    with Session(engine) as session:
+        tasks = session.scalars(select(MemoryTask).where(MemoryTask.tenant_id == tenant_id)).all()
+        assert len(tasks) == 2
+        assert len({task.correlation_id for task in tasks}) == 2
+        assert all(task.correlation_id != request_id[:64] for task in tasks)
+        assert all(task.payload["request_id"] == request_id for task in tasks)
+        events = session.scalars(
+            select(MemoryAuditLog).where(MemoryAuditLog.tenant_id == tenant_id)
+        ).all()
+        assert len(events) == 4
+        assert {event.task_id for event in events} == {task.id for task in tasks}
+
+
 def test_add_rejects_idempotency_and_message_conflicts(
     api_context: tuple[TestClient, str]
 ) -> None:

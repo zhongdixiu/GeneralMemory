@@ -10,15 +10,16 @@ import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from memory_cmic.audit import record_audit
 from memory_cmic.business_scenes import INITIAL_SCENES
 from memory_cmic.db import create_database_engine
 from memory_cmic.models import (
     BusinessScene,
-    MemoryAuditLog,
     MemoryEvidence,
     MemoryItem,
     ProfileProperty,
@@ -91,6 +92,7 @@ def build_report(session: Session, tenant_id: str | None = None) -> list[dict]:
 
 
 def apply_report(session: Session, records: list[dict]) -> list[dict]:
+    correlation_id = uuid4().hex
     outcomes = []
     alias_targets: dict[tuple[str, str], set[str]] = {}
     for item in records:
@@ -244,19 +246,19 @@ def apply_report(session: Session, records: list[dict]) -> list[dict]:
         row.business_domains = proposed
         row.version += 1
         row.updated_at = datetime.now(UTC)
-        session.add(
-            MemoryAuditLog(
-                tenant_id=row.tenant_id,
-                action="MIGRATE",
-                target_type=item["target_type"],
-                target_id=row.id,
-                operator_type="admin",
-                operator_id="business_scene_migration",
-                reason_code="BUSINESS_SCENE_NORMALIZED",
-                reason=item["reason"][:512],
-                state_before=before,
-                state_after={"business_domains": proposed, "version": row.version},
-            )
+        record_audit(
+            session,
+            tenant_id=row.tenant_id,
+            action="MIGRATE",
+            target_type=item["target_type"],
+            target_id=row.id,
+            operator_type="admin",
+            operator_id="business_scene_migration",
+            reason_code="BUSINESS_SCENE_NORMALIZED",
+            reason=item["reason"][:512],
+        correlation_id=correlation_id,
+            state_before=before,
+            state_after={"business_domains": proposed, "version": row.version},
         )
         outcomes.append({"id": row.id, "status": "APPLIED"})
     return outcomes

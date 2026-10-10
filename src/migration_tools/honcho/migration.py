@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from memory_cmic.audit import record_audit
 from memory_cmic.models import (
     ExternalEntityMapping,
     MemoryAuditLog,
@@ -78,19 +79,18 @@ def _add_audit(
     correlation_id: str,
     state_after: Mapping[str, Any],
 ) -> None:
-    session.add(
-        MemoryAuditLog(
-            tenant_id=batch.tenant_id,
-            action="MIGRATE",
-            target_type=target_type,
-            target_id=target_id,
-            operator_type="system",
-            operator_id="honcho_migration",
-            reason_code="HONCHO_MIGRATION",
-            reason="Honcho small-batch migration validation",
-            correlation_id=correlation_id,
-            state_after=dict(state_after),
-        )
+    record_audit(
+        session,
+        tenant_id=batch.tenant_id,
+        action="MIGRATE",
+        target_type=target_type,
+        target_id=target_id,
+        operator_type="system",
+        operator_id="honcho_migration",
+        reason_code="HONCHO_MIGRATION",
+        reason="Honcho small-batch migration validation",
+        correlation_id=correlation_id,
+        state_after=dict(state_after),
     )
 
 

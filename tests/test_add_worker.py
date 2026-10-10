@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, delete, func, select
+from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from memory_cmic.api import create_app
@@ -174,6 +174,13 @@ def test_worker_creates_fact_evidence_embedding_and_public_result(
             select(MemoryEmbedding).where(MemoryEmbedding.tenant_id == tenant_id)
         ).one()
         assert len(embedding.embedding) == 1024
+        events = session.scalars(select(MemoryAuditLog).where(
+            MemoryAuditLog.tenant_id == tenant_id, MemoryAuditLog.target_type == "memory"
+        ).order_by(MemoryAuditLog.id)).all()
+        assert [event.reason_code for event in events] == ["FACT_EXTRACTED"]
+        assert events[0].task_id == task_id
+        assert events[0].state_after["version"] == 1
+        assert events[0].context["message_ids"] == ["msg_new"]
 
 
 def test_worker_exact_duplicate_only_adds_evidence(
@@ -201,6 +208,11 @@ def test_worker_exact_duplicate_only_adds_evidence(
                 MemoryEvidence.tenant_id == tenant_id
             )
         ) == 2
+        events = session.scalars(select(MemoryAuditLog).where(
+            MemoryAuditLog.tenant_id == tenant_id, MemoryAuditLog.target_type == "memory"
+        ).order_by(MemoryAuditLog.id)).all()
+        assert [event.reason_code for event in events] == ["FACT_EXTRACTED", "FACT_EVIDENCE_ADDED"]
+        assert events[1].context["message_ids"] == ["msg_exact_2"]
 
 
 def test_high_similarity_is_classified_instead_of_hard_dropped(
@@ -468,8 +480,6 @@ def test_failed_prior_batch_blocks_then_recovery_allows_following(worker_context
 
 
 def test_expired_lease_during_commit_rolls_back_all_results(worker_context, engine, monkeypatch):
-    import time
-
     from memory_cmic import worker
     from memory_cmic.task_queue import claim_tasks
 
@@ -491,7 +501,16 @@ def test_expired_lease_during_commit_rolls_back_all_results(worker_context, engi
 
     def slow_commit(*args, **kwargs):
         results = original_commit(*args, **kwargs)
-        time.sleep(1.2)
+        # Expire after the transaction began, while this transaction holds the task lock.
+        # A CURRENT_TIMESTAMP fence would incorrectly allow this commit.
+        args[0].execute(
+            text(
+                "UPDATE memory_task SET locked_until = "
+                "CURRENT_TIMESTAMP + INTERVAL '1 microsecond' "
+                "WHERE id = :task_id"
+            ),
+            {"task_id": task_id},
+        )
         return results
 
     monkeypatch.setattr(worker, "_commit_results", slow_commit)
@@ -510,10 +529,12 @@ def test_expired_lease_during_commit_rolls_back_all_results(worker_context, engi
     with factory() as session:
         for model in (MemoryItem, MemoryEvidence, MemoryEmbedding):
             assert not session.scalars(select(model).where(model.tenant_id == tenant_id)).all()
-        assert not session.scalars(select(MemoryAuditLog).where(
-            MemoryAuditLog.tenant_id == tenant_id,
-            MemoryAuditLog.reason_code == "FACT_EXTRACTED",
-        )).all()
+        assert not session.scalars(
+            select(MemoryAuditLog).where(
+                MemoryAuditLog.tenant_id == tenant_id,
+                MemoryAuditLog.reason_code == "FACT_EXTRACTED",
+            )
+        ).all()
         source = session.scalars(
             select(SourceRecord).where(
                 SourceRecord.tenant_id == tenant_id,
