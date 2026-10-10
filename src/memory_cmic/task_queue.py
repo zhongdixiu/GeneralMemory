@@ -122,6 +122,18 @@ def claim_tasks(
                                 AND prior.status IN ('pending', 'processing')
                           )
                       )
+                      AND (candidate.task_type <> 'profile_rebuild' OR (
+                          pg_try_advisory_xact_lock(hashtextextended(
+                              'profile-claim:' || candidate.tenant_id || ':' ||
+                              COALESCE(candidate.user_id, candidate.target_id), 0))
+                          AND NOT EXISTS (
+                              SELECT 1 FROM memory_task prior
+                              WHERE prior.tenant_id = candidate.tenant_id
+                                AND prior.user_id = candidate.user_id
+                                AND prior.task_type = 'profile_rebuild'
+                                AND prior.status = 'processing' AND prior.id <> candidate.id
+                          )
+                      ))
                     ORDER BY candidate.priority DESC,
                              candidate.available_at ASC,
                              candidate.created_at ASC

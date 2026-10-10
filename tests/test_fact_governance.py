@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from time import monotonic, sleep
 
 import pytest
 from sqlalchemy import select
@@ -62,14 +63,19 @@ class ScriptedModel:
 
 
 def _run(engine, model, budget=ExtractionBudget()):
-    assert run_once(
-        sessionmaker(engine, expire_on_commit=False),
-        worker_id="p02_worker",
-        fact_model=model,
-        embedder=FakeEmbedder(),
-        duplicate_threshold=0.85,
-        budget=budget,
-    )
+    deadline = monotonic() + 5
+    while monotonic() < deadline:
+        if run_once(
+            sessionmaker(engine, expire_on_commit=False),
+            worker_id="p02_worker",
+            fact_model=model,
+            embedder=FakeEmbedder(),
+            duplicate_threshold=0.85,
+            budget=budget,
+        ):
+            return
+        sleep(0.02)
+    pytest.fail("fact task did not become available within 5 seconds")
 
 
 def _memories(session, tenant_id):

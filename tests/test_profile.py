@@ -7,7 +7,7 @@ from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import sessionmaker
 from test_add_worker import FakeEmbedder, _add
 from test_add_worker import worker_context as _worker_context
@@ -83,11 +83,29 @@ def _drain_profile(factory, tenant_id, model):
                     MemoryTask.tenant_id == tenant_id,
                     MemoryTask.task_type == "profile_rebuild",
                     MemoryTask.status.in_(["pending", "processing"]),
+                    or_(
+                        MemoryTask.payload["activation_only"].as_boolean().is_not(True),
+                        MemoryTask.available_at <= datetime.now(UTC),
+                    ),
                 )
                 .limit(1)
             )
         if pending is None:
             return
+        # These tests exercise distillation, not the automatic waiting policy.
+        with factory.begin() as session:
+            for task in session.scalars(
+                select(MemoryTask).where(
+                    MemoryTask.tenant_id == tenant_id,
+                    MemoryTask.task_type == "profile_rebuild",
+                    MemoryTask.status == "pending",
+                    or_(
+                        MemoryTask.payload["activation_only"].as_boolean().is_not(True),
+                        MemoryTask.available_at <= datetime.now(UTC),
+                    ),
+                )
+            ):
+                task.available_at = datetime.now(UTC) - timedelta(seconds=1)
         if not run_once(factory, worker_id="profile_test", model=model):
             sleep(0.05)
     with factory() as session:
@@ -432,7 +450,9 @@ def test_changed_evidence_during_model_call_does_not_commit_stale_profile(profil
     factory, tenant_id = profile_context
     with factory.begin() as session:
         source, _ = _fact(session, tenant_id, "以后邮件回复简洁")
-        task = enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id="user_profile")
+        task = enqueue_profile_rebuild(
+            session, tenant_id=tenant_id, user_id="user_profile", force=True,
+        )
 
     class ChangingModel(ExplicitProfileModel):
         def extract(self, memories):
@@ -806,7 +826,9 @@ def test_fact_expiring_during_model_call_cannot_commit_profile(profile_context, 
     assert run_once(factory, worker_id="profile_test", model=ExpiringModel())
     with factory() as session:
         assert session.get(MemoryTask, task.id).status == "pending"
-        assert "evidence changed" in session.get(MemoryTask, task.id).last_error
+        assert session.get(MemoryTask, task.id).payload["deferred_reason"] == "INPUT_CHANGED"
+        assert session.get(MemoryTask, task.id).attempt_count == 0
+        assert session.get(MemoryTask, task.id).last_error is None
         assert (
             session.scalar(select(ProfileProperty.id).where(ProfileProperty.tenant_id == tenant_id))
             is None

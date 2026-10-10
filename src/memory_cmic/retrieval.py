@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import UTC, datetime
 
 from sqlalchemy import Select, String, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.orm import Session
 
+from memory_cmic.evidence import memory_has_valid_evidence
 from memory_cmic.extraction_input import input_size
-from memory_cmic.lifecycle import evidence_group_is_complete
 from memory_cmic.models import (
     BusinessScene,
     MemoryEmbedding,
@@ -203,60 +202,6 @@ def search_memories(
     return applicable([memory for memory, _ in ordered[:candidate_limit]])
 
 
-def _user_memory_has_valid_evidence(
-    session: Session,
-    memory: MemoryItem,
-    *,
-    tenant_id: str,
-    user_id: str,
-    now: datetime,
-    checked: dict[str, bool],
-    allowed_source_ids: set[str] | None = None,
-) -> bool:
-    if memory.id in checked:
-        return checked[memory.id]
-    # Mark before following derives edges so a cycle cannot support itself.
-    checked[memory.id] = False
-    if (
-        memory.tenant_id != tenant_id
-        or memory.subject_type != "user"
-        or memory.subject_id != user_id
-        or memory.cognitive_type not in {"fact", "inference"}
-        or memory.status != "active"
-        or memory.effective_at > now
-        or (memory.expired_at is not None and memory.expired_at <= now)
-    ):
-        return False
-    groups: dict[str, list[MemoryEvidence]] = defaultdict(list)
-    for edge in session.scalars(select(MemoryEvidence).where(
-        MemoryEvidence.tenant_id == tenant_id,
-        MemoryEvidence.downstream_memory_id == memory.id,
-    )):
-        groups[edge.evidence_group_id].append(edge)
-    relationship = "supports" if memory.cognitive_type == "fact" else "derives"
-    for group_id, edges in groups.items():
-        if any(edge.relationship_type != relationship for edge in edges):
-            continue
-        if not evidence_group_is_complete(session, group_id, now=now):
-            continue
-        if relationship == "supports" and allowed_source_ids is not None:
-            if not all(edge.upstream_source_id in allowed_source_ids for edge in edges):
-                continue
-        if relationship == "derives":
-            bases = [session.get(MemoryItem, edge.upstream_memory_id) for edge in edges]
-            if not all(
-                basis is not None and _user_memory_has_valid_evidence(
-                    session, basis, tenant_id=tenant_id, user_id=user_id, now=now,
-                    checked=checked, allowed_source_ids=allowed_source_ids,
-                )
-                for basis in bases
-            ):
-                continue
-        checked[memory.id] = True
-        break
-    return checked[memory.id]
-
-
 def _matching_source_ids(
     session: Session, *, tenant_id: str, user_id: str,
     agent_id: str | None, source_system: str | None,
@@ -370,7 +315,7 @@ def search_task_memories(
         memories = session.scalars(select(MemoryItem).where(
             *base, MemoryItem.subject_id == user_id,
         )).all() if allowed_source_ids else []
-        matching_ids = [memory.id for memory in memories if _user_memory_has_valid_evidence(
+        matching_ids = [memory.id for memory in memories if memory_has_valid_evidence(
             session, memory, tenant_id=tenant_id, user_id=user_id, now=check_time,
             checked=checked, allowed_source_ids=allowed_source_ids,
         )]
@@ -413,7 +358,7 @@ def search_task_memories(
     if validate_user_evidence:
         checked: dict[str, bool] = {}
         check_time = now or datetime.now(UTC)
-        ordered = [row for row in ordered if _user_memory_has_valid_evidence(
+        ordered = [row for row in ordered if memory_has_valid_evidence(
             session, row[0], tenant_id=tenant_id, user_id=user_id, now=check_time,
             checked=checked, allowed_source_ids=allowed_source_ids,
         )]
@@ -468,7 +413,7 @@ def search_task_memories(
             if memory is not None and (
                 memory.version, memory.summary, memory.content
             ) == snapshots[memory_id]:
-                if _user_memory_has_valid_evidence(
+                if memory_has_valid_evidence(
                     session, memory, tenant_id=tenant_id, user_id=user_id,
                     now=check_time, checked=checked,
                     allowed_source_ids=allowed_source_ids,

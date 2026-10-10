@@ -88,6 +88,7 @@ Search 使用既有 Qwen 和 SiliconFlow 配置：`DASHSCOPE_API_KEY`、`DASHSCO
   "profiles": [
     {
       "id": "profile_example",
+      "assertion_kind": "explicit",
       "property_key": null,
       "property_value": "用户希望邮件回复简洁，但风险部分详细说明。",
       "value_type": "string",
@@ -97,11 +98,11 @@ Search 使用既有 Qwen 和 SiliconFlow 配置：`DASHSCOPE_API_KEY`、`DASHSCO
 }
 ```
 
-user_id 必填，1～128 字符。默认返回该用户全部当前有效画像，不按来源 Agent、业务范围或任务 query 筛选，也不分页或按 Search 的 limit 截断。business_domains=null 表示通用，否则保留具体适用场景；调用方使用时必须遵守陈述和业务范围中的条件。
+user_id 必填，1～128 字符。新增 assertion_kind=explicit/inferred；默认 include_inferred=false，仅返回明确画像，传入 include_inferred=true 才纳入有效推断画像。默认返回该用户全部业务范围的当前有效明确画像，不按来源 Agent、业务范围或任务 query 筛选，也不分页或按 Search 的 limit 截断。business_domains=null 表示通用，否则保留具体适用场景；调用方使用时必须遵守陈述和业务范围中的条件。
 
 自动画像为 property_key=null 的独立字符串陈述，不应转成以 key 为唯一索引的字典。显式固定属性继续返回原 property_key、property_value 和 value_type，兼容 JSON、列表、数字和布尔值。
 
-读取检查画像状态、有效时间，以及事实依据、证据版本和原始来源的有效性。无画像返回 `{"profiles": []}`。此接口直接读取已有画像，不触发重建，不调用真实模型，也不要求 Search 的模型凭证已配置。
+读取递归检查画像状态、有效时间、依据类型、证据版本和原始来源；推断画像还核对准入指纹及已知冲突，相关依据变化后旧批准不继续生效。无画像返回 `{"profiles": []}`。此接口直接读取已有画像，不触发重建，不调用真实模型，也不要求 Search 的模型凭证已配置。
 
 内部 `read_profiles()` 省略 business_domain 时读取全部；显式传入业务场景仍保留既有筛选行为。
 
@@ -110,7 +111,10 @@ user_id 必填，1～128 字符。默认返回该用户全部当前有效画像�
 - 明确事实按租户、用户归属，允许不同 Agent 的独立来源支持同一事实；合并后继续保留来源证据。
 - 后台推断使用同租户、同用户、业务和项目范围一致的有效明确事实，允许跨 Agent、跨会话，不以写入 Agent 隔离。至少两条依据事实、两个不同的用户原始文本 content_hash，以及两个不同的 `(source_system, session_id)` 才能通过证据门槛；推断范围不得扩大，且不以已有推断继续生成推断。
 - 相同原文转发后即使消息元数据或接入 Agent 不同，也不增加独立文本数量。不同文本及不同会话只是必要条件，不证明语义上独立；改写转述等情况仍需模型和业务质量评估。
-- 画像继续跨 Agent 汇总有效、当前、长期且非项目限定的明确事实，保留原文条件和业务限制，不消费推断。Profile 本轮不增加来源过滤。
+- 画像跨 Agent 汇总有效、当前、长期且非项目限定的明确事实；一条明确陈述即可成为候选。开启 MEMORY_PROFILE_ALLOW_INFERRED 后，合格推断可作为 inferred 依据，不能转为明确事实或硬性指令，也不扩大适用范围。Profile 不增加来源过滤。
+- 候选先按代码规则筛选，模型蒸馏再判断长期价值；不新增三次/七天的硬门槛。首次与后续相关变化均经过 2 分钟静默或 30 分钟最长等待，空结果也记录已评估输入，无变化不周期性调用模型。
+- 候选删除、过期、争议或证据失效立即阻断相应画像读取；新画像可以等待触发条件。输入变化延期不计服务失败重试，同用户画像任务合并且不并发执行。
+- POST /api/v1/profiles/rebuild 接收 {user_id}，需 can_manage_governance，显式重建绕过等待。GET /profiles 仍只读。存量回填及运行步骤见 [治理后台运行说明](./记忆治理后台运行说明.md)。
 
 独立文本判定的收紧用于后续推断生成，本轮没有批量重算或作废历史推断。
 

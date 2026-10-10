@@ -224,7 +224,7 @@ def test_business_filter_and_stable_pagination(session):
 
 def test_coalesced_profile_task_preserves_both_trigger_chains(session):
     task = enqueue_profile_rebuild(
-        session, tenant_id="tenant_audit", user_id="user", correlation_id="first"
+        session, tenant_id="tenant_audit", user_id="user", correlation_id="first", force=True
     )
     reused = enqueue_profile_rebuild(
         session, tenant_id="tenant_audit", user_id="user", correlation_id="second"
@@ -301,6 +301,9 @@ def test_audit_schema_matches_metadata(connection):
         connection,
         opts={
             "include_schemas": True,
+            "include_name": lambda name, kind, parent: (
+                kind != "schema" or name in {None, connection.dialect.default_schema_name}
+            ),
             "include_object": lambda obj, name, kind, reflected, compare_to: (
                 kind != "table" or name == "memory_audit_log"
             ),

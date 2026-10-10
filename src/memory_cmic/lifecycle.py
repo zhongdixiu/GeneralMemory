@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from memory_cmic.audit import record_audit
+from memory_cmic.evidence import evidence_group_is_complete
 from memory_cmic.governance_state import lock_user, mark_dirty
 from memory_cmic.models import (
     MemoryEmbedding,
@@ -17,48 +18,6 @@ from memory_cmic.models import (
     SourceRecord,
 )
 from memory_cmic.task_queue import enqueue_task
-
-
-def _active_and_current(
-    status: str,
-    version: int,
-    expected: int,
-    expired_at: datetime | None,
-    now: datetime,
-) -> bool:
-    return status == "active" and version == expected and (expired_at is None or expired_at > now)
-
-
-def evidence_group_is_complete(
-    session: Session, evidence_group_id: str, *, now: datetime | None = None
-) -> bool:
-    check_time = now or datetime.now(UTC)
-    edges = session.scalars(
-        select(MemoryEvidence).where(MemoryEvidence.evidence_group_id == evidence_group_id)
-    ).all()
-    if not edges:
-        return False
-
-    for edge in edges:
-        if edge.status != "active":
-            return False
-        if edge.upstream_source_id is not None:
-            upstream = session.get(SourceRecord, edge.upstream_source_id)
-            if upstream is None or not _active_and_current(
-                upstream.status, upstream.version, edge.upstream_version, None, check_time
-            ):
-                return False
-        else:
-            upstream_memory = session.get(MemoryItem, edge.upstream_memory_id)
-            if upstream_memory is None or not _active_and_current(
-                upstream_memory.status,
-                upstream_memory.version,
-                edge.upstream_version,
-                upstream_memory.expired_at,
-                check_time,
-            ):
-                return False
-    return True
 
 
 def _audit_invalidation(
@@ -194,7 +153,9 @@ def _propagate_memory_change(
             now=now,
             task=task,
         )
-    if memory.subject_type == "user" and memory.cognitive_type == "fact":
+    if memory.subject_type == "user" and memory.cognitive_type in {"fact", "inference"}:
+        if task is None or task.task_type != "consolidate":
+            mark_dirty(session, memory)
         enqueue_profile_rebuild(
             session, tenant_id=memory.tenant_id, user_id=memory.subject_id,
             correlation_id=correlation_id,
@@ -263,22 +224,31 @@ def recheck_downstream(
         now=check_time,
         task=task,
     )
-    enqueue_task(
-        session,
-        {
-            "id": uuid4().hex,
-            "tenant_id": tenant_id,
-            "task_type": task_type,
-            "target_type": target_type,
-            "target_id": downstream.id,
-            "input_version": downstream.version,
-            "idempotency_key": f"{task_type}:{target_type}:{downstream.id}:v{downstream.version}",
-            "correlation_id": correlation_id,
-            "payload": {"trigger_version": downstream.version},
-            "priority": priority,
-            "available_at": check_time,
-        },
-    )
+    if isinstance(downstream, ProfileProperty):
+        from memory_cmic.profile import enqueue_profile_rebuild
+
+        session.flush()
+        enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id=downstream.user_id,
+                                correlation_id=correlation_id)
+    else:
+        enqueue_task(
+            session,
+            {
+                "id": uuid4().hex,
+                "tenant_id": tenant_id,
+                "task_type": task_type,
+                "target_type": target_type,
+                "target_id": downstream.id,
+                "input_version": downstream.version,
+                "idempotency_key": (
+                    f"{task_type}:{target_type}:{downstream.id}:v{downstream.version}"
+                ),
+                "correlation_id": correlation_id,
+                "payload": {"trigger_version": downstream.version},
+                "priority": priority,
+                "available_at": check_time,
+            },
+        )
     session.flush()
 
     if isinstance(downstream, MemoryItem):
@@ -379,6 +349,11 @@ def update_or_invalidate_source(
         affected = session.get(MemoryItem, memory_id)
         if affected is not None:
             mark_dirty(session, affected)
+    from memory_cmic.profile import enqueue_profile_rebuild
+
+    for user_id in users:
+        enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id=user_id,
+                                correlation_id=correlation_id)
     return source
 
 

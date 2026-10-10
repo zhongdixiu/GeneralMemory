@@ -1399,7 +1399,10 @@ def main() -> None:
                 model_id=settings.siliconflow_embedding_model,
             )
         elif role == "profile":
-            handled = run_profile_once(session_factory, worker_id=worker_id, model=profile_model)
+            handled = run_profile_once(
+                session_factory, worker_id=worker_id, model=profile_model,
+                allow_inferred=settings.profile_allow_inferred,
+            )
         else:
             handled = run_once(
                 session_factory,

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from test_add_api import _settings
 from test_consolidation import seed_fact
 
@@ -53,6 +53,8 @@ class FakeSelector:
 
 @pytest.fixture
 def read_api(connection, monkeypatch):
+    # Evidence/access tests need exact candidates, independent of HNSW approximate recall.
+    connection.execute(text("SET LOCAL enable_indexscan = off"))
     tenant = f"tenant_read_{uuid4().hex}"
     credentials = StaticCredentialStore([
         {

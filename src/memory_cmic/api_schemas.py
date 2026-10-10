@@ -190,6 +190,7 @@ class SearchResponse(BaseModel):
 
 class ProfileResult(BaseModel):
     id: str
+    assertion_kind: Literal["explicit", "inferred"] = "explicit"
     property_key: str | None
     property_value: dict[str, Any] | list[Any] | str | int | float | bool
     value_type: str
@@ -218,6 +219,7 @@ class TaskResponse(BaseModel):
 
 class GovernancePolicyPatch(StrictRequestModel):
     auto_enabled: bool | None = None
+    generate_inferences: bool | None = None
     change_threshold: int | None = Field(default=None, ge=1, le=10000)
     idle_minutes: int | None = Field(default=None, ge=0, le=10080)
     cooldown_minutes: int | None = Field(default=None, ge=0, le=10080)

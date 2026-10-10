@@ -65,7 +65,7 @@ def backfill_history(session: Session, tenant_id: str) -> int:
             SELECT tenant_id, subject_id, id, 1, :now, :now
             FROM memory_item
             WHERE tenant_id = :tenant_id AND subject_type = 'user'
-              AND status = 'active' AND (expired_at IS NULL OR expired_at > :now)
+              AND status IN ('active', 'disputed') AND (expired_at IS NULL OR expired_at > :now)
             ON CONFLICT (tenant_id, user_id, memory_id) DO NOTHING
             """
         ),
@@ -84,7 +84,7 @@ def backfill_user(session: Session, tenant_id: str, user_id: str) -> int:
             SELECT tenant_id, subject_id, id, 1, :now, :now
             FROM memory_item
             WHERE tenant_id = :tenant_id AND subject_type = 'user' AND subject_id = :user_id
-              AND status = 'active' AND (expired_at IS NULL OR expired_at > :now)
+              AND status IN ('active', 'disputed') AND (expired_at IS NULL OR expired_at > :now)
             ON CONFLICT (tenant_id, user_id, memory_id) DO NOTHING
             """
         ),
@@ -147,6 +147,8 @@ def create_run(
                 "automatic": automatic,
                 "trigger_reason": trigger_reason,
                 "policy_version": policy.version,
+                "prompt_version": "governance-v2-phases",
+                "generate_inferences": policy.generate_inferences,
                 "limits": {
                     "memories": policy.max_memories,
                     "model_calls": policy.max_model_calls,

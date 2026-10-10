@@ -5,14 +5,16 @@ import json
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from memory_cmic.audit import record_audit
+from memory_cmic.evidence import evidence_fingerprint, memory_has_valid_evidence
 from memory_cmic.extraction_input import input_size
 from memory_cmic.governance_state import lock_user, schedule_due
 from memory_cmic.lifecycle import evidence_group_is_complete, govern_memory, invalidate_memory
@@ -39,7 +41,9 @@ from memory_cmic.worker import LeaseLostError, _lease_heartbeat, _leased_task
 logger = logging.getLogger(__name__)
 
 PROMPT = (
-    "Review active memories for one user and one applicability scope. Return JSON with "
+    "Review memories for one user and one applicability scope according to phase. "
+    "Facts/inference phases use active facts; conflicts phase includes disputed members. "
+    "Return JSON with "
     "merge_ids, inferences, invalidations. Only merge statements with identical durable meaning, "
     "conditions and validity period. Never merge complementary requirements. "
     "Only infer actionable task preferences or habits supported by at least two independent "
@@ -75,8 +79,23 @@ PROMPT = (
     "inferences:[{content,source_ids:[memory_id],confidence:0..1,reason,"
     "business_domains:[scene_name]|null}], "
     "invalidations:[{memory_id,source_id,quote,reason}], "
-    "suspicions:[{memory_id,reason}]}. Spell these five top-level keys exactly. "
+    "suspicions:[{memory_id,reason}]}. Spell these common keys exactly; phase-specific keys "
+    "are described below. "
     "Empty arrays are valid."
+    " Obey phase: facts permits merges/invalidations/suspicions only; inference permits "
+    "inferences and inference_reviews only, using the freshly supplied facts. "
+    "When generate_inferences is false return no new inferences; still review existing ones. "
+    "inference_reviews:[{memory_id,outcome:retain|invalidate,source_id:null|string,"
+    "quote:null|string,reason:string}]. Only invalidate an existing inference when a supplied "
+    "explicit user fact with a verbatim source quote contradicts it in the same conditions. "
+    "phase conflicts reviews the complete conflict group. Never pick the newest or majority "
+    "claim without explicit correction/clarification. Return conflict_review:{"
+    "outcome:unresolved|resolved|conditions_distinguished,reason:string,question:string|null,"
+    "facts:[{content:string,basis_memory_id:string,source_id:string,quote:string}]}. "
+    "For resolved require a later explicit user clarification and create a sourced replacement; "
+    "for conditions_distinguished quote evidence supporting the complete separate conditions. "
+    "Never silently reactivate disputed records. If evidence is insufficient return unresolved "
+    "with the specific question needed from the user. Other result arrays must be empty."
 )
 
 
@@ -103,6 +122,31 @@ class SuspicionProposal(BaseModel):
     reason: str = Field(min_length=1, max_length=512)
 
 
+class ConflictFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=4096)
+    basis_memory_id: str
+    source_id: str
+    quote: str = Field(min_length=1)
+
+
+class ConflictReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["unresolved", "resolved", "conditions_distinguished"]
+    reason: str = Field(min_length=1, max_length=512)
+    question: str | None = Field(default=None, max_length=512)
+    facts: list[ConflictFact] = Field(default_factory=list)
+
+
+class InferenceReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    memory_id: str
+    outcome: Literal["retain", "invalidate"]
+    source_id: str | None = None
+    quote: str | None = None
+    reason: str = Field(min_length=1, max_length=512)
+
+
 class ConsolidationDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     merge_ids: list[str] = Field(default_factory=list)
@@ -110,6 +154,8 @@ class ConsolidationDecision(BaseModel):
     inferences: list[InferenceProposal] = Field(default_factory=list)
     invalidations: list[InvalidationProposal] = Field(default_factory=list)
     suspicions: list[SuspicionProposal] = Field(default_factory=list)
+    conflict_review: ConflictReview | None = None
+    inference_reviews: list[InferenceReview] = Field(default_factory=list)
 
 
 class ConsolidationModel(Protocol):
@@ -192,6 +238,9 @@ def _scope_memories(session: Session, anchor: MemoryItem) -> list[MemoryItem]:
             )
         )
         if _scope_key(value, aliases) == _scope_key(anchor, aliases)
+        and memory_has_valid_evidence(
+            session, value, tenant_id=anchor.tenant_id, user_id=anchor.subject_id, now=now
+        )
     ]
 
 
@@ -222,6 +271,7 @@ def _evidence_snapshot(
             m.business_domains,
             m.project_domains,
             m.metadata_json,
+            m.effective_at.isoformat(),
             m.expired_at.isoformat() if m.expired_at else None,
         )
         for m in sorted(memories, key=lambda item: item.id)
@@ -287,7 +337,7 @@ def _payload(
     memories: list[MemoryItem],
     edges: dict[str, list[MemoryEvidence]],
     input_limit: int,
-) -> dict:
+) -> dict | None:
     ordered = sorted(
         memories,
         key=lambda m: (
@@ -308,6 +358,7 @@ def _payload(
         .limit(30)
     ).all()
     payload = {
+        "phase": "facts",
         "anchor_id": anchor.id,
         "scenes": [
             {"name": scene.name, "definition": scene.definition, "aliases": scene.aliases}
@@ -318,7 +369,9 @@ def _payload(
         "memories": [
             {
                 "id": m.id,
-                "content": m.content[:512],
+                "status": m.status,
+                "conflict_group_id": m.conflict_group_id,
+                "content": m.content,
                 "effective_at": m.effective_at.isoformat(),
                 "expired_at": m.expired_at.isoformat() if m.expired_at else None,
                 "business_domains": m.business_domains,
@@ -327,7 +380,7 @@ def _payload(
                 "sources": [
                     {
                         "id": s.id,
-                        "text": s.raw_content[:160],
+                        "text": s.raw_content,
                         "occurred_at": s.occurred_at.isoformat(),
                     }
                     for s in _valid_sources(session, edges[m.id])[:2]
@@ -348,7 +401,7 @@ def _payload(
     while len(payload["memories"]) > 1 and input_size(PROMPT, payload) > input_limit:
         payload["memories"].pop()
     if input_size(PROMPT, payload) > input_limit:
-        raise ProviderError("consolidation anchor exceeds model input budget")
+        return None
     return payload
 
 
@@ -638,7 +691,13 @@ def _infer(
                 upstream_version=base.version,
             )
         )
+    from memory_cmic.profile import enqueue_profile_rebuild
     from memory_cmic.task_queue import enqueue_task
+
+    session.flush()
+    enqueue_profile_rebuild(
+        session, tenant_id=task.tenant_id, user_id=task.user_id, correlation_id=task.correlation_id
+    )
 
     enqueue_task(
         session,
@@ -750,35 +809,11 @@ def _invalidate(
     return {"operation_id": op.id, "kind": "invalidate", "memory_ids": [target.id]}
 
 
-def _process_anchor(
-    session_factory: sessionmaker[Session],
-    ownership: dict[str, str],
-    memory_id: str,
-    generation: int,
-    model: ConsolidationModel,
-    model_id: str,
-) -> tuple[str, list[dict]]:
-    with session_factory() as session:
-        task = session.get(MemoryTask, ownership["task_id"])
-        pending = session.get(GovernancePending, (task.tenant_id, task.user_id, memory_id))
-        anchor = session.get(MemoryItem, memory_id)
-        if pending is None or pending.generation != generation or anchor is None:
-            return "changed", []
-        if (
-            anchor.status != "active"
-            or anchor.cognitive_type != "fact"
-            or (anchor.expired_at is not None and anchor.expired_at <= datetime.now(UTC))
-        ):
-            return "skip", []
-        memories = _scope_memories(session, anchor)
-        fingerprint, edges = _evidence_snapshot(session, memories)
-        if len(memories) < 2:
-            return "skip", []
-        payload = _payload(session, anchor, memories, edges, getattr(model, "input_limit", 9952))
-        if len(payload["memories"]) < 2:
-            return "skip", []
+def _consume_call(session_factory, ownership: dict, model: ConsolidationModel, payload: dict):
     with session_factory.begin() as session:
         task = _leased_task(session, **ownership)
+        if task.payload["model_calls"] >= task.payload["limits"]["model_calls"]:
+            return None
         task.payload = {**task.payload, "model_calls": task.payload["model_calls"] + 1}
     decision = model.decide(payload)
     usage = getattr(model, "last_usage", None)
@@ -791,104 +826,638 @@ def _process_anchor(
             }
             task.payload = {
                 **task.payload,
-                "token_usage": {
-                    "prompt_tokens": previous["prompt_tokens"] + usage.get("prompt_tokens", 0),
-                    "completion_tokens": previous["completion_tokens"]
-                    + usage.get("completion_tokens", 0),
+                "token_usage": {key: previous[key] + usage.get(key, 0) for key in previous},
+            }
+    return decision
+
+
+def _conflict_input(session: Session, task: MemoryTask, group: str) -> list[MemoryItem]:
+    members = session.scalars(
+        select(MemoryItem)
+        .where(
+            MemoryItem.tenant_id == task.tenant_id,
+            MemoryItem.subject_type == "user",
+            MemoryItem.subject_id == task.user_id,
+            MemoryItem.conflict_group_id == group,
+        )
+        .order_by(MemoryItem.id)
+    ).all()
+    aliases = _scene_aliases(session, task.tenant_id)
+    scopes = {_scope_key(m, aliases) for m in members}
+    related = [
+        m
+        for m in session.scalars(
+            select(MemoryItem).where(
+                MemoryItem.tenant_id == task.tenant_id,
+                MemoryItem.subject_type == "user",
+                MemoryItem.subject_id == task.user_id,
+                MemoryItem.cognitive_type == "fact",
+                MemoryItem.status.in_(["active", "disputed"]),
+            )
+        )
+        if _scope_key(m, aliases) in scopes
+    ]
+    return sorted({m.id: m for m in [*members, *related]}.values(), key=lambda m: m.id)
+
+
+def _apply_conflict_review(
+    session: Session,
+    task: MemoryTask,
+    group: str,
+    memories: list[MemoryItem],
+    fingerprint: str,
+    review: ConflictReview,
+    model_id: str,
+) -> dict:
+    members = [m for m in memories if m.conflict_group_id == group and m.status == "disputed"]
+    by_id = {m.id: m for m in memories}
+    replacements = []
+    outcome = review.outcome
+    if outcome == "unresolved" and not review.question:
+        review.question = "请明确这些争议陈述当前分别适用于哪些条件，或哪条已被纠正。"
+    if outcome != "unresolved":
+        if not review.facts or (outcome == "conditions_distinguished" and len(review.facts) < 2):
+            raise ProviderError("conflict resolution requires grounded replacement facts")
+        prepared = []
+        for proposal in review.facts:
+            basis = by_id.get(proposal.basis_memory_id)
+            source = session.get(SourceRecord, proposal.source_id)
+            if (
+                basis is None
+                or source is None
+                or source.tenant_id != task.tenant_id
+                or (source.user_id or source.author_id) != task.user_id
+                or source.author_type != "user"
+                or source.status != "active"
+                or not proposal.quote.strip()
+                or proposal.quote not in source.raw_content
+                or source.id
+                not in {
+                    s.id
+                    for s in _valid_sources(
+                        session,
+                        session.scalars(
+                            select(MemoryEvidence).where(
+                                MemoryEvidence.downstream_memory_id == basis.id
+                            )
+                        ).all(),
+                    )
+                }
+            ):
+                raise ProviderError("conflict resolution cites invalid user evidence")
+            if outcome == "resolved" and any(source.occurred_at <= m.effective_at for m in members):
+                # A newer claim alone still needs semantic clarification, enforced in the prompt.
+                raise ProviderError("conflict clarification must follow all disputed assertions")
+            if outcome == "resolved" and any(_scope_key(m) != _scope_key(basis) for m in members):
+                raise ProviderError("conflict clarification cannot replace unrelated scopes")
+            if not _eligible_interval(basis):
+                raise ProviderError(
+                    "conflict resolution cannot restore expired or historical facts"
+                )
+            prepared.append((proposal, basis, source))
+        if outcome == "conditions_distinguished" and not {m.id for _, m, _ in prepared}.issuperset(
+            m.id for m in members
+        ):
+            raise ProviderError("condition separation must explain every disputed member")
+        for proposal, basis, source in prepared:
+            memory = MemoryItem(
+                id=f"gcf_{uuid4().hex}",
+                tenant_id=task.tenant_id,
+                subject_type="user",
+                subject_id=task.user_id,
+                cognitive_type="fact",
+                summary=proposal.content[:512],
+                content=proposal.content,
+                business_domains=basis.business_domains,
+                project_domains=basis.project_domains,
+                effective_at=(source.occurred_at if outcome == "resolved" else basis.effective_at),
+                expired_at=basis.expired_at,
+                metadata_json={
+                    **(basis.metadata_json or {}),
+                    "governance_action": "CLARIFY",
+                    "previous_memory_ids": [m.id for m in members],
+                },
+                created_by="memory_cmic_governance",
+            )
+            session.add(memory)
+            session.flush()
+            session.add(
+                MemoryEvidence(
+                    id=f"evi_{uuid4().hex}",
+                    tenant_id=task.tenant_id,
+                    relationship_type="supports",
+                    evidence_group_id=f"evg_{uuid4().hex}",
+                    upstream_source_id=source.id,
+                    downstream_memory_id=memory.id,
+                    upstream_version=source.version,
+                    evidence_snippet=proposal.quote[:512],
+                )
+            )
+            from memory_cmic.task_queue import enqueue_task
+
+            enqueue_task(
+                session,
+                {
+                    "id": uuid4().hex,
+                    "tenant_id": task.tenant_id,
+                    "task_type": "vector_upsert",
+                    "target_type": "memory",
+                    "target_id": memory.id,
+                    "input_version": memory.version,
+                    "idempotency_key": (
+                        f"vector_upsert:memory:{memory.id}:v{memory.version}:{model_id}"
+                    ),
+                    "correlation_id": task.correlation_id,
+                    "payload": {"model_id": model_id},
+                },
+            )
+            replacements.append(memory.id)
+        for member in members:
+            govern_memory(
+                session,
+                memory=member,
+                status="invalidated",
+                reason_code="CONFLICT_RESOLVED",
+                correlation_id=task.correlation_id,
+                task=task,
+                reason=review.reason,
+            )
+        from memory_cmic.profile import enqueue_profile_rebuild
+
+        session.flush()
+        enqueue_profile_rebuild(
+            session,
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            correlation_id=task.correlation_id,
+        )
+    details = {
+        "conflict_group_id": group,
+        "fingerprint": fingerprint,
+        "outcome": outcome,
+        "reason": review.reason,
+        "question": review.question,
+        "members": [{"id": m.id, "version": m.version} for m in members],
+        "replacement_ids": replacements,
+    }
+    op = _record(session, task, "conflict_review", None, details)
+    return {"kind": "conflict_review", "operation_id": op.id, **details}
+
+
+def _eligible_interval(memory: MemoryItem) -> bool:
+    now = datetime.now(UTC)
+    return (
+        memory.effective_at <= now
+        and (memory.expired_at is None or memory.expired_at > now)
+        and (memory.metadata_json or {}).get("temporal_kind", "current") != "historical"
+    )
+
+
+def _review_conflicts(session_factory, ownership, model, model_id):
+    with session_factory() as session:
+        task = session.get(MemoryTask, ownership["task_id"])
+        groups = session.scalars(
+            select(MemoryItem.conflict_group_id)
+            .where(
+                MemoryItem.tenant_id == task.tenant_id,
+                MemoryItem.subject_type == "user",
+                MemoryItem.subject_id == task.user_id,
+                MemoryItem.status == "disputed",
+                MemoryItem.conflict_group_id.is_not(None),
+            )
+            .distinct()
+            .order_by(MemoryItem.conflict_group_id)
+        ).all()
+    for group in groups:
+        with session_factory() as session:
+            task = session.get(MemoryTask, ownership["task_id"])
+            memories = _conflict_input(session, task, group)
+            fingerprint, edges = _evidence_snapshot(session, memories)
+            previous = session.scalars(
+                select(GovernanceOperation)
+                .where(
+                    GovernanceOperation.tenant_id == task.tenant_id,
+                    GovernanceOperation.user_id == task.user_id,
+                    GovernanceOperation.kind == "conflict_review",
+                )
+                .order_by(GovernanceOperation.created_at.desc())
+            ).all()
+            cached = next(
+                (
+                    op
+                    for op in previous
+                    if op.details.get("conflict_group_id") == group
+                    and op.details.get("fingerprint") == fingerprint
+                ),
+                None,
+            )
+            anchor = next(m for m in memories if m.conflict_group_id == group)
+            payload = _payload(
+                session, anchor, memories, edges, getattr(model, "input_limit", 9952)
+            )
+            if payload is not None:
+                payload["phase"] = "conflicts"
+                payload["conflict_group_id"] = group
+            generations = {
+                row.memory_id: row.generation
+                for row in session.scalars(
+                    select(GovernancePending).where(
+                        GovernancePending.tenant_id == task.tenant_id,
+                        GovernancePending.user_id == task.user_id,
+                    )
+                )
+            }
+            if (payload is None or len(payload["memories"]) != len(memories)
+                    or len(memories) > task.payload["limits"]["memories"]):
+                with session_factory.begin() as writer:
+                    current_task = _leased_task(writer, **ownership)
+                    current_task.result_json = [*(current_task.result_json or []), {
+                        "kind": "skip", "reason": "CONFLICT_INPUT_BUDGET",
+                        "conflict_group_id": group,
+                    }]
+                continue  # Never adjudicate a truncated conflict group.
+        decision = None if cached else _consume_call(session_factory, ownership, model, payload)
+        if not cached and decision is None:
+            break
+        with session_factory.begin() as session:
+            task = _leased_task(session, **ownership)
+            lock_user(session, task.tenant_id, task.user_id)
+            current = _conflict_input(session, task, group)
+            if _evidence_snapshot(session, current)[0] != fingerprint:
+                task.result_json = [
+                    *(task.result_json or []),
+                    {"kind": "skip", "reason": "INPUT_CHANGED", "conflict_group_id": group},
+                ]
+                continue
+            if cached:
+                result = {
+                    "kind": "conflict_review",
+                    "operation_id": cached.id,
+                    "cached": True,
+                    **cached.details,
+                }
+            else:
+                review = decision.conflict_review or ConflictReview(
+                    outcome="unresolved",
+                    reason="没有充分的用户澄清证据",
+                    question="请明确这些争议陈述当前分别适用于哪些条件，或哪条已被纠正。",
+                )
+                result = _apply_conflict_review(
+                    session, task, group, current, fingerprint, review, model_id
+                )
+            task.result_json = [*(task.result_json or []), result]
+            for memory in current:
+                if memory.conflict_group_id != group:
+                    continue
+                pending = session.get(GovernancePending, (task.tenant_id, task.user_id, memory.id))
+                if pending and pending.generation == generations.get(memory.id):
+                    session.delete(pending)
+
+
+def _scope_inferences(session: Session, anchor: MemoryItem) -> list[MemoryItem]:
+    aliases = _scene_aliases(session, anchor.tenant_id)
+    return [
+        m
+        for m in session.scalars(
+            select(MemoryItem).where(
+                MemoryItem.tenant_id == anchor.tenant_id,
+                MemoryItem.subject_type == "user",
+                MemoryItem.subject_id == anchor.subject_id,
+                MemoryItem.cognitive_type == "inference",
+                MemoryItem.status == "active",
+            )
+        )
+        if _scope_key(m, aliases)[1:] == _scope_key(anchor, aliases)[1:]
+    ]
+
+
+def _review_inference(session, task, proposal, existing, available, edges):
+    inference = existing.get(proposal.memory_id)
+    if inference is None:
+        raise ProviderError("inference review cites an unprovided inference")
+    if proposal.outcome == "retain":
+        return None
+    source = session.get(SourceRecord, proposal.source_id) if proposal.source_id else None
+    if (
+        source is None
+        or source.tenant_id != task.tenant_id
+        or source.author_type != "user"
+        or source.user_id != task.user_id
+        or source.status != "active"
+        or not proposal.quote
+        or proposal.quote not in source.raw_content
+        or source.occurred_at < inference.effective_at
+        or not any(
+            source.id in {s.id for s in _valid_sources(session, edges[m.id])}
+            for m in available.values()
+        )
+    ):
+        raise ProviderError("inference invalidation requires grounded explicit counterevidence")
+    invalidate_memory(
+        session,
+        tenant_id=task.tenant_id,
+        memory_id=inference.id,
+        task=task,
+        correlation_id=task.correlation_id,
+        reason_code="INFERENCE_CONTRADICTED",
+        reason=proposal.reason,
+    )
+    _record(
+        session,
+        task,
+        "rejection",
+        inference.id,
+        {
+            "kind": "inference",
+            "content": inference.content,
+            "source_ids": list(
+                session.scalars(
+                    select(MemoryEvidence.upstream_memory_id).where(
+                        MemoryEvidence.tenant_id == task.tenant_id,
+                        MemoryEvidence.downstream_memory_id == inference.id,
+                        MemoryEvidence.relationship_type == "derives",
+                    )
+                )
+            ),
+            "basis_roots": {
+                mid: _roots(session, mid)
+                for mid in session.scalars(
+                    select(MemoryEvidence.upstream_memory_id).where(
+                        MemoryEvidence.tenant_id == task.tenant_id,
+                        MemoryEvidence.downstream_memory_id == inference.id,
+                    )
+                )
+            },
+            "source_id": source.id,
+            "quote": proposal.quote,
+            "reason": proposal.reason,
+        },
+    )
+    op = _record(
+        session,
+        task,
+        "inference_review",
+        inference.id,
+        {
+            "outcome": "invalidated",
+            "reason": proposal.reason,
+            "source_id": source.id,
+            "quote": proposal.quote,
+        },
+    )
+    return {"kind": "inference_invalidated", "operation_id": op.id, "memory_ids": [inference.id]}
+
+
+def _process_anchor(
+    session_factory: sessionmaker[Session],
+    ownership: dict[str, str],
+    memory_id: str,
+    generation: int,
+    model: ConsolidationModel,
+    model_id: str,
+) -> tuple[str, list[dict]]:
+    results = []
+    captured = {}
+    covered = True
+    for phase in ("facts", "inference"):
+        with session_factory() as session:
+            task = session.get(MemoryTask, ownership["task_id"])
+            pending = session.get(GovernancePending, (task.tenant_id, task.user_id, memory_id))
+            anchor = session.get(MemoryItem, memory_id)
+            if pending is None:
+                return "skip", results
+            if pending.generation != generation or anchor is None:
+                return "changed", results
+            if anchor.status == "disputed":
+                return "conflict_pending", results
+            if anchor.cognitive_type == "inference":
+                groups = list(
+                    session.scalars(
+                        select(MemoryEvidence.evidence_group_id).where(
+                            MemoryEvidence.tenant_id == task.tenant_id,
+                            MemoryEvidence.downstream_memory_id == anchor.id,
+                        )
+                    )
+                )
+                for group in groups:
+                    if evidence_group_is_complete(session, group):
+                        basis_id = session.scalar(
+                            select(MemoryEvidence.upstream_memory_id)
+                            .where(MemoryEvidence.evidence_group_id == group)
+                            .limit(1)
+                        )
+                        anchor = session.get(MemoryItem, basis_id)
+                        break
+            if anchor.cognitive_type == "fact" and anchor.status != "active":
+                survivors = _scope_memories(session, anchor)
+                if survivors:
+                    # Continue inference on the surviving scope after a merge/invalidation.
+                    anchor = survivors[0]
+            if (
+                anchor.status != "active"
+                or anchor.cognitive_type != "fact"
+                or not _eligible_interval(anchor)
+            ):
+                return "skip", results
+            memories = _scope_memories(session, anchor)
+            existing = _scope_inferences(session, anchor) if phase == "inference" else []
+            if len(memories) < 2 and not existing:
+                continue
+            fingerprint, edges = _evidence_snapshot(session, memories)
+            inference_fingerprint = [evidence_fingerprint(session, m) for m in existing]
+            payload = _payload(
+                session, anchor, memories, edges, getattr(model, "input_limit", 9952)
+            )
+            if payload is None:
+                return "input_budget", results
+            payload["phase"] = phase
+            if phase == "inference":
+                payload["generate_inferences"] = task.payload.get("generate_inferences", True)
+                if not payload["generate_inferences"] and not existing:
+                    continue
+                payload["existing_inferences"] = [
+                    {"id": m.id, "content": m.content} for m in existing
+                ]
+                if input_size(PROMPT, payload) > getattr(model, "input_limit", 9952):
+                    return "budget", results
+                # Known unresolved contradictions must not feed new conclusions.
+                if session.scalar(
+                    select(MemoryItem.id)
+                    .where(
+                        MemoryItem.tenant_id == task.tenant_id,
+                        MemoryItem.subject_type == "user",
+                        MemoryItem.subject_id == task.user_id,
+                        MemoryItem.status == "disputed",
+                        MemoryItem.cognitive_type == "fact",
+                        MemoryItem.effective_at <= datetime.now(UTC),
+                        or_(MemoryItem.expired_at.is_(None),
+                            MemoryItem.expired_at > datetime.now(UTC)),
+                        MemoryItem.metadata_json["temporal_kind"].as_string()
+                        .is_distinct_from("historical"),
+                        MemoryItem.business_domains.is_not_distinct_from(anchor.business_domains),
+                    )
+                    .limit(1)
+                ):
+                    continue
+            allowed_ids = {item["id"] for item in payload["memories"]}
+            allowed_sources = {
+                source["id"] for item in payload["memories"] for source in item["sources"]
+            }
+            for row in session.scalars(
+                select(GovernancePending).where(
+                    GovernancePending.tenant_id == task.tenant_id,
+                    GovernancePending.user_id == task.user_id,
+                    GovernancePending.memory_id.in_(allowed_ids | {m.id for m in existing}),
+                )
+            ):
+                captured.setdefault(row.memory_id, row.generation)
+            omitted = {m.id for m in memories} - allowed_ids
+        if omitted:
+            # Keep out-of-budget candidates visible even when they were not originally dirty.
+            with session_factory.begin() as session:
+                task = _leased_task(session, **ownership)
+                lock_user(session, task.tenant_id, task.user_id)
+                for mid in omitted:
+                    session.execute(pg_insert(GovernancePending).values(
+                        tenant_id=task.tenant_id, user_id=task.user_id, memory_id=mid,
+                    ).on_conflict_do_nothing(index_elements=["tenant_id", "user_id", "memory_id"]))
+                if phase == "facts":
+                    task.result_json = [*(task.result_json or []), {
+                        "kind": "deferred_scope", "reason": "INPUT_BUDGET",
+                        "memory_ids": sorted(omitted),
+                    }]
+        decision = _consume_call(session_factory, ownership, model, payload)
+        if decision is None:
+            return "budget", results
+        if (
+            phase == "facts"
+            and (
+                not set(decision.merge_ids).issubset(allowed_ids)
+                or any(
+                    p.memory_id not in allowed_ids or p.source_id not in allowed_sources
+                    for p in decision.invalidations
+                )
+                or any(p.memory_id not in allowed_ids for p in decision.suspicions)
+            )
+            or phase == "inference"
+            and (
+                any(not set(p.source_ids).issubset(allowed_ids) for p in decision.inferences)
+                or any(
+                    p.memory_id not in {m.id for m in existing}
+                    or (p.source_id and p.source_id not in allowed_sources)
+                    for p in decision.inference_reviews
+                )
+            )
+        ):
+            raise ProviderError("consolidation decision references unprovided evidence")
+        with session_factory.begin() as session:
+            task = _leased_task(session, **ownership)
+            lock_user(session, task.tenant_id, task.user_id)
+            pending = session.get(GovernancePending, (task.tenant_id, task.user_id, memory_id))
+            if pending is None or pending.generation != generation:
+                return "changed", results
+            anchor = session.get(MemoryItem, anchor.id)
+            current = _scope_memories(session, anchor)
+            current_fingerprint, current_edges = _evidence_snapshot(session, current)
+            fresh_inferences = _scope_inferences(session, anchor) if phase == "inference" else []
+            if (
+                current_fingerprint != fingerprint
+                or [evidence_fingerprint(session, m) for m in fresh_inferences]
+                != inference_fingerprint
+            ):
+                return "changed", results
+            available = {m.id: m for m in current if m.id in allowed_ids}
+            changes = []
+            if phase == "facts":
+                chosen = [available[mid] for mid in decision.merge_ids if mid != anchor.id]
+                if decision.merge_ids and not chosen:
+                    covered = False
+                if (
+                    chosen
+                    and len(decision.merge_ids) == len(set(decision.merge_ids))
+                    and all(_same_interval(anchor, m) for m in chosen)
+                ):
+                    changes.extend(
+                        _merge(session, task, anchor, chosen, current_edges, decision.merge_reason)
+                    )
+                for proposal in decision.invalidations:
+                    result = _invalidate(session, task, proposal, available)
+                    if result:
+                        changes.append(result)
+                for proposal in decision.suspicions:
+                    op = _record(
+                        session,
+                        task,
+                        "suspected_stale",
+                        proposal.memory_id,
+                        {
+                            "reason": proposal.reason,
+                            "version": available[proposal.memory_id].version,
+                        },
+                    )
+                    changes.append(
+                        {
+                            "kind": "suspected_stale",
+                            "operation_id": op.id,
+                            "memory_ids": [proposal.memory_id],
+                        }
+                    )
+            else:
+                rejected = session.scalars(
+                    select(GovernanceOperation).where(
+                        GovernanceOperation.tenant_id == task.tenant_id,
+                        GovernanceOperation.user_id == task.user_id,
+                        GovernanceOperation.kind == "rejection",
+                    )
+                ).all()
+                for proposal in decision.inference_reviews:
+                    result = _review_inference(
+                        session,
+                        task,
+                        proposal,
+                        {m.id: m for m in fresh_inferences},
+                        available,
+                        current_edges,
+                    )
+                    if result:
+                        changes.append(result)
+                session.flush()
+                rejected = session.scalars(select(GovernanceOperation).where(
+                    GovernanceOperation.tenant_id == task.tenant_id,
+                    GovernanceOperation.user_id == task.user_id,
+                    GovernanceOperation.kind == "rejection",
+                )).all()
+                for proposal in decision.inferences:
+                    if not task.payload.get("generate_inferences", True):
+                        break
+                    result = _infer(
+                        session, task, proposal, available, current_edges, rejected, model_id
+                    )
+                    if result:
+                        changes.append(result)
+            results.extend(changes)
+            task.result_json = [*(task.result_json or []), *changes]
+            task.payload = {
+                **task.payload,
+                "execution": {
+                    "changed": bool(changes)
+                    or task.payload.get("execution", {}).get("changed", False)
                 },
             }
-    allowed_ids = {item["id"] for item in payload["memories"]}
-    allowed_sources = {source["id"] for item in payload["memories"] for source in item["sources"]}
-    if (
-        not set(decision.merge_ids).issubset(allowed_ids)
-        or any(not set(item.source_ids).issubset(allowed_ids) for item in decision.inferences)
-        or any(item.memory_id not in allowed_ids for item in decision.invalidations)
-        or any(item.source_id not in allowed_sources for item in decision.invalidations)
-        or any(item.memory_id not in allowed_ids for item in decision.suspicions)
-    ):
-        raise ProviderError("consolidation decision references an unprovided memory")
     with session_factory.begin() as session:
         task = _leased_task(session, **ownership)
         lock_user(session, task.tenant_id, task.user_id)
-        pending = session.get(GovernancePending, (task.tenant_id, task.user_id, memory_id))
-        anchor = session.get(MemoryItem, memory_id)
-        if pending is None or pending.generation != generation or anchor is None:
-            return "changed", []
-        current = _scope_memories(session, anchor)
-        current_fingerprint, current_edges = _evidence_snapshot(session, current)
-        if current_fingerprint != fingerprint:
-            pending.generation += 1
-            pending.updated_at = datetime.now(UTC)
-            task.payload = {**task.payload, "cursor": task.payload["cursor"] + 1}
+        for mid, expected in {memory_id: generation, **(captured if covered else {})}.items():
+            pending = session.get(GovernancePending, (task.tenant_id, task.user_id, mid))
+            if pending is not None and pending.generation == expected:
+                session.delete(pending)
+        if not results:
             task.result_json = [
                 *(task.result_json or []),
-                {"kind": "skip", "memory_ids": [memory_id], "reason": "INPUT_CHANGED"},
+                {"kind": "skip", "memory_ids": [memory_id], "reason": "NO_VALID_CHANGE"},
             ]
-            return "committed", []
-        available = {m.id: m for m in current}
-        results = []
-        rejected = session.scalars(
-            select(GovernanceOperation).where(
-                GovernanceOperation.tenant_id == task.tenant_id,
-                GovernanceOperation.user_id == task.user_id,
-                GovernanceOperation.kind == "rejection",
-            )
-        ).all()
-        chosen = [
-            available[mid] for mid in decision.merge_ids if mid in available and mid != anchor.id
-        ]
-        if (
-            chosen
-            and len(decision.merge_ids) == len(set(decision.merge_ids))
-            and all(_same_interval(anchor, m) for m in chosen)
-        ):
-            results.extend(
-                _merge(session, task, anchor, chosen, current_edges, decision.merge_reason)
-            )
-        for proposal in decision.invalidations:
-            result = _invalidate(session, task, proposal, available)
-            if result:
-                results.append(result)
-        for proposal in decision.inferences:
-            result = _infer(session, task, proposal, available, current_edges, rejected, model_id)
-            if result:
-                results.append(result)
-        for proposal in decision.suspicions:
-            if proposal.memory_id in available:
-                op = _record(
-                    session,
-                    task,
-                    "suspected_stale",
-                    proposal.memory_id,
-                    {
-                        "reason": proposal.reason,
-                        "memory_id": proposal.memory_id,
-                        "content": available[proposal.memory_id].content,
-                        "version": available[proposal.memory_id].version,
-                    },
-                )
-                results.append(
-                    {
-                        "operation_id": op.id,
-                        "kind": "suspected_stale",
-                        "memory_ids": [proposal.memory_id],
-                    }
-                )
-        if not results:
-            results.append({"kind": "skip", "memory_ids": [memory_id], "reason": "NO_VALID_CHANGE"})
-        session.delete(pending)
-        task.result_json = [*(task.result_json or []), *results]
-        task.payload = {
-            **task.payload,
-            "cursor": task.payload["cursor"] + 1,
-            "execution": {
-                "changed": any(
-                    item["kind"] in {"merge", "inference", "invalidate"} for item in results
-                )
-                or task.payload.get("execution", {}).get("changed", False)
-            },
-        }
-        return "committed", results
+        task.payload = {**task.payload, "cursor": task.payload["cursor"] + 1}
+    return "committed", results
 
 
 def process_run(
@@ -916,6 +1485,7 @@ def process_run(
                 "cursor": 0,
                 "model_calls": 0,
             }
+    _review_conflicts(session_factory, ownership, model, model_id)
     while True:
         with session_factory() as session:
             task = session.get(MemoryTask, ownership["task_id"])
@@ -932,7 +1502,7 @@ def process_run(
             continue
         with session_factory.begin() as session:
             task = _leased_task(session, **ownership)
-            if disposition != "changed":
+            if disposition not in {"changed", "budget", "input_budget", "conflict_pending"}:
                 pending = session.get(GovernancePending, (task.tenant_id, task.user_id, memory_id))
                 if pending is not None and pending.generation == generation:
                     session.delete(pending)
@@ -941,7 +1511,10 @@ def process_run(
                 {
                     "kind": "skip",
                     "memory_ids": [memory_id],
-                    "reason": "INPUT_CHANGED" if disposition == "changed" else "NOT_ELIGIBLE",
+                    "reason": {"changed": "INPUT_CHANGED", "budget": "MODEL_BUDGET",
+                               "input_budget": "INPUT_BUDGET",
+                               "conflict_pending": "CONFLICT_PENDING"}.get(
+                                   disposition, "NOT_ELIGIBLE"),
                 },
             ]
             task.payload = {**task.payload, "cursor": task.payload["cursor"] + 1}

@@ -256,6 +256,7 @@ class ProfileProperty(Base):
         UniqueConstraint("tenant_id", "id", name="uq_profile_property_tenant_id_id"),
         CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_profile_confidence"),
         CheckConstraint("version > 0", name="ck_profile_version_positive"),
+        CheckConstraint("assertion_kind IN ('explicit', 'inferred')", name="ck_profile_assertion"),
         CheckConstraint(
             "business_domains IS NULL OR cardinality(business_domains) > 0",
             name="ck_profile_business_domains_nonempty",
@@ -279,6 +280,9 @@ class ProfileProperty(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    assertion_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'explicit'")
+    )
     business_domains: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)))
     property_key: Mapped[str | None] = mapped_column(String(128))
     property_value: Mapped[dict[str, Any] | list[Any] | str | int | float | bool] = mapped_column(
@@ -564,6 +568,14 @@ Index(
     postgresql_where=text("task_type = 'consolidate' AND status IN ('pending', 'processing')"),
 )
 Index(
+    "uq_profile_pending_user", MemoryTask.tenant_id, MemoryTask.user_id, unique=True,
+    postgresql_where=text("task_type = 'profile_rebuild' AND status = 'pending'"),
+)
+Index(
+    "uq_profile_processing_user", MemoryTask.tenant_id, MemoryTask.user_id, unique=True,
+    postgresql_where=text("task_type = 'profile_rebuild' AND status = 'processing'"),
+)
+Index(
     "uq_system_task_key",
     MemoryTask.tenant_id,
     MemoryTask.idempotency_key,
@@ -578,6 +590,9 @@ class GovernancePolicy(Base):
     tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     auto_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
+    )
+    generate_inferences: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
     )
     change_threshold: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
     idle_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
@@ -603,6 +618,10 @@ class GovernanceSubjectState(Base):
     user_id: Mapped[str] = mapped_column(String(128))
     last_add_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    profile_input: Mapped[str | None] = mapped_column(String(64))
+    profile_evaluated_input: Mapped[str | None] = mapped_column(String(64))
+    profile_first_dirty_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    profile_last_change_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )

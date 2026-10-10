@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import sessionmaker
 
-from memory_cmic.governance_worker import enqueue_expired_memories, run_once
+from memory_cmic.governance_worker import TASK_TYPES, enqueue_expired_memories, run_once
 from memory_cmic.lifecycle import invalidate_memory, update_or_invalidate_source
 from memory_cmic.models import (
     GovernanceOperation,
@@ -106,9 +107,19 @@ def _task(
 
 
 def _drain(factory, embedder: FakeEmbedder, *, limit: int = 10) -> None:
-    for _ in range(limit):
-        if not run_once(factory, worker_id="governance_test", embedder=embedder):
-            return
+    deadline = monotonic() + 5
+    handled = 0
+    while monotonic() < deadline and handled < limit:
+        if run_once(factory, worker_id="governance_test", embedder=embedder):
+            handled += 1
+            continue
+        with factory() as session:
+            if not session.scalar(select(MemoryTask.id).where(
+                MemoryTask.task_type.in_(TASK_TYPES),
+                MemoryTask.status.in_(["pending", "processing"]),
+            ).limit(1)):
+                return
+        sleep(0.02)
     pytest.fail("governance queue did not drain")
 
 

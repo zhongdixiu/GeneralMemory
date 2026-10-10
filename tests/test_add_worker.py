@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -131,13 +132,18 @@ def _add(
 
 
 def _run(engine: Engine, model: FakeFactModel) -> None:
-    assert run_once(
-        sessionmaker(engine, expire_on_commit=False),
-        worker_id=f"worker_{uuid4().hex}",
-        fact_model=model,
-        embedder=FakeEmbedder(),
-        duplicate_threshold=0.85,
-    )
+    deadline = monotonic() + 5
+    while monotonic() < deadline:
+        if run_once(
+            sessionmaker(engine, expire_on_commit=False),
+            worker_id=f"worker_{uuid4().hex}",
+            fact_model=model,
+            embedder=FakeEmbedder(),
+            duplicate_threshold=0.85,
+        ):
+            return
+        sleep(0.02)
+    pytest.fail("fact task did not become available within 5 seconds")
 
 
 def test_worker_creates_fact_evidence_embedding_and_public_result(

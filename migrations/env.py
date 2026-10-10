@@ -17,7 +17,7 @@ database_url = os.environ.get("MEMORY_DATABASE_URL")
 if not database_url:
     raise RuntimeError("MEMORY_DATABASE_URL must be set")
 
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

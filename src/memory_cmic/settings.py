@@ -19,6 +19,7 @@ class Settings:
     siliconflow_embedding_model: str
     duplicate_candidate_threshold: float
     extraction_budget: ExtractionBudget = ExtractionBudget()
+    profile_allow_inferred: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -47,6 +48,8 @@ class Settings:
                 "SILICONFLOW_EMBEDDING_MODEL", "BAAI/bge-m3"
             ),
             duplicate_candidate_threshold=threshold,
+            profile_allow_inferred=os.environ.get("MEMORY_PROFILE_ALLOW_INFERRED", "false").lower()
+            == "true",
             extraction_budget=ExtractionBudget(
                 input_tokens=int(os.environ.get("MEMORY_MODEL_INPUT_TOKENS", "12000")),
                 output_tokens=int(os.environ.get("MEMORY_MODEL_OUTPUT_TOKENS", "2048")),

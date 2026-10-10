@@ -3,27 +3,40 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections import defaultdict
-from datetime import UTC, datetime
-from typing import Any, Protocol
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from memory_cmic.audit import record_audit
+from memory_cmic.evidence import (
+    evidence_fingerprint,
+    evidence_group_is_complete,
+    memory_has_valid_evidence,
+)
 from memory_cmic.extraction_input import input_size
 from memory_cmic.governance_state import lock_user
 from memory_cmic.models import (
+    GovernanceSubjectState,
     MemoryEvidence,
     MemoryItem,
     MemoryTask,
     ProfileProperty,
-    SourceRecord,
 )
 from memory_cmic.providers import ProviderError, QwenFactModel, normalize_business_domain
-from memory_cmic.task_queue import claim_tasks, enqueue_task, fail_and_retry_task, finish_task
+from memory_cmic.task_queue import (
+    claim_tasks,
+    enqueue_task,
+    fail_and_retry_task,
+    finish_exhausted_leases,
+    finish_task,
+)
 from memory_cmic.worker import LeaseLostError, _lease_heartbeat, _leased_task
 
 logger = logging.getLogger(__name__)
@@ -55,6 +68,14 @@ PROFILE_PROMPT = (
     "Quote must be an exact substring of that memory's content and directly support the whole "
     "value, including its conditions. Use only supplied memory IDs. Return an empty array when "
     "nothing qualifies. Preserve the original language."
+    " Inputs identify cognitive_type. For fact inputs retain explicit statements only. "
+    "For inference inputs select only already stated, stable, useful preferences or habits "
+    "supported across independent tasks. Reject temporary patterns and unsupported traits. "
+    "Preserve inferred uncertainty (例如 用户倾向于), never turn it into an explicit user "
+    "instruction, and never perform additional inference. When the same qualified statement "
+    "has explicit and inferred support, prefer the explicit statement."
+    " Explicit facts and negations in the same conditions override inferred patterns; reject "
+    "an inferred property contradicted by any supplied explicit fact."
 )
 LEGACY_KEYS = {
     "姓名",
@@ -65,7 +86,10 @@ LEGACY_KEYS = {
     "pref.email.reply_style",
     "pref.output.requirements",
 }
-ProfileIdentity = tuple[tuple[str, ...] | None, str, datetime, datetime | None]
+ProfileIdentity = tuple[tuple[str, ...] | None, str, datetime, datetime | None, str]
+PROFILE_QUIET = timedelta(minutes=2)
+PROFILE_MAX_WAIT = timedelta(minutes=30)
+PROFILE_POLICY_VERSION = 1
 
 
 class ProfileProposal(BaseModel):
@@ -100,7 +124,7 @@ def _user_memories(session: Session, tenant_id: str, user_id: str) -> list[Memor
             MemoryItem.tenant_id == tenant_id,
             MemoryItem.subject_type == "user",
             MemoryItem.subject_id == user_id,
-            MemoryItem.cognitive_type == "fact",
+            MemoryItem.cognitive_type.in_(["fact", "inference"]),
         )
         .order_by(MemoryItem.id)
     ).all()
@@ -120,94 +144,268 @@ def _eligible_fact(memory: MemoryItem, now: datetime) -> bool:
     )
 
 
-def _snapshot(session: Session, tenant_id: str, user_id: str) -> tuple[str, list[MemoryItem]]:
-    from memory_cmic.lifecycle import evidence_group_is_complete
+def inference_profiles_enabled() -> bool:
+    return os.environ.get("MEMORY_PROFILE_ALLOW_INFERRED", "false").lower() == "true"
 
+
+def _basis_fingerprint(
+    session: Session, memory: MemoryItem, *, now: datetime | None = None,
+) -> str:
+    entries = evidence_fingerprint(session, memory)
+    now = now or datetime.now(UTC)
+    # Block inferred profiles when new explicit evidence awaits semantic review.
+    for related in _user_memories(session, memory.tenant_id, memory.subject_id):
+        if (related.cognitive_type == "fact" and related.status in {"active", "disputed"}
+                and related.effective_at <= now
+                and (related.expired_at is None or related.expired_at > now)
+                and _scope(related) == _scope(memory)):
+            entries.extend(evidence_fingerprint(session, related))
+    return hashlib.sha256(
+        json.dumps(
+            entries,
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+
+def _eligible_inference(session: Session, memory: MemoryItem, now: datetime) -> bool:
+    if not _eligible_fact(memory, now):
+        return False
+    # Known unresolved contradictions block inferred profiles in the relevant scope.
+    if any(
+        _scope(other) == _scope(memory)
+        for other in session.scalars(
+            select(MemoryItem).where(
+                MemoryItem.tenant_id == memory.tenant_id,
+                MemoryItem.subject_type == "user",
+                MemoryItem.subject_id == memory.subject_id,
+                MemoryItem.status == "disputed",
+                MemoryItem.cognitive_type == "fact",
+                MemoryItem.effective_at <= now,
+                or_(MemoryItem.expired_at.is_(None), MemoryItem.expired_at > now),
+                MemoryItem.metadata_json["temporal_kind"].as_string().is_distinct_from("historical"),
+            )
+        )
+    ):
+        return False
+    groups: dict[str, list[MemoryEvidence]] = defaultdict(list)
+    for edge in session.scalars(
+        select(MemoryEvidence).where(
+            MemoryEvidence.tenant_id == memory.tenant_id,
+            MemoryEvidence.downstream_memory_id == memory.id,
+            MemoryEvidence.relationship_type == "derives",
+        )
+    ):
+        groups[edge.evidence_group_id].append(edge)
+    for group, edges in groups.items():
+        if not evidence_group_is_complete(session, group, now=now):
+            continue
+        bases = {
+            edge.upstream_memory_id: session.get(MemoryItem, edge.upstream_memory_id)
+            for edge in edges
+        }
+        if len(bases) < 2 or any(
+            basis is None
+            or basis.cognitive_type != "fact"
+            or not _eligible_fact(basis, now)
+            or _scope(basis) != _scope(memory)
+            for basis in bases.values()
+        ):
+            continue
+        hashes, contexts = set(), set()
+        from memory_cmic.consolidation import _valid_sources
+
+        for basis in bases.values():
+            source_edges = session.scalars(
+                select(MemoryEvidence).where(
+                    MemoryEvidence.tenant_id == memory.tenant_id,
+                    MemoryEvidence.downstream_memory_id == basis.id,
+                )
+            ).all()
+            for source in _valid_sources(session, source_edges):
+                if (
+                    source.author_type == "user"
+                    and (source.user_id or source.author_id) == memory.subject_id
+                ):
+                    hashes.add(source.content_hash)
+                    if source.session_id:
+                        contexts.add((source.source_system, source.session_id))
+        if len(hashes) >= 2 and len(contexts) >= 2:
+            return True
+    return False
+
+
+def _snapshot(
+    session: Session,
+    tenant_id: str,
+    user_id: str,
+    *,
+    allow_inferred: bool | None = None,
+) -> tuple[str, list[MemoryItem]]:
+    allow_inferred = inference_profiles_enabled() if allow_inferred is None else allow_inferred
     now = datetime.now(UTC)
-    memories = _user_memories(session, tenant_id, user_id)
-    ids = [memory.id for memory in memories]
-    edges = (
-        session.scalars(
-            select(MemoryEvidence)
-            .where(
-                MemoryEvidence.tenant_id == tenant_id, MemoryEvidence.downstream_memory_id.in_(ids)
-            )
-            .order_by(MemoryEvidence.id)
-        ).all()
-        if ids
-        else []
-    )
-    fingerprint: list[Any] = [
-        (
-            m.id,
-            m.version,
-            m.status,
-            m.content,
-            m.business_domains,
-            m.project_domains,
-            m.metadata_json,
-            m.effective_at.isoformat(),
-            m.expired_at.isoformat() if m.expired_at else None,
-        )
-        for m in memories
-    ]
-    complete: dict[str, bool] = {}
-    for edge in edges:
-        upstream = (
-            session.get(SourceRecord, edge.upstream_source_id) if edge.upstream_source_id else None
-        )
-        fingerprint.append(
-            (
-                edge.id,
-                edge.status,
-                edge.evidence_group_id,
-                edge.upstream_version,
-                upstream.status if upstream else None,
-                upstream.version if upstream else None,
-            )
-        )
-        if edge.evidence_group_id not in complete:
-            complete[edge.evidence_group_id] = evidence_group_is_complete(
-                session, edge.evidence_group_id, now=now
-            )
-    valid_ids = {
-        edge.downstream_memory_id
-        for edge in edges
-        if edge.relationship_type == "supports" and complete[edge.evidence_group_id]
-    }
-    eligible = [m for m in memories if m.id in valid_ids and _eligible_fact(m, now)]
-    fingerprint.append(("eligible", [m.id for m in eligible]))
+    eligible = []
+    fingerprint = []
+    for memory in _user_memories(session, tenant_id, user_id):
+        if not _eligible_fact(memory, now) or not memory_has_valid_evidence(
+            session,
+            memory,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            now=now,
+        ):
+            continue
+        if memory.cognitive_type == "inference" and (
+            not allow_inferred or not _eligible_inference(session, memory, now)
+        ):
+            continue
+        eligible.append(memory)
+        fingerprint.extend(evidence_fingerprint(session, memory))
+    fingerprint.append(("policy", PROFILE_POLICY_VERSION, allow_inferred))
     digest = hashlib.sha256(
-        json.dumps(fingerprint, ensure_ascii=False, sort_keys=True).encode()
+        json.dumps(
+            fingerprint,
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
     ).hexdigest()
     return digest, eligible
 
 
+def _profile_state(session: Session, tenant_id: str, user_id: str) -> GovernanceSubjectState:
+    session.execute(
+        pg_insert(GovernanceSubjectState)
+        .values(
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        .on_conflict_do_nothing(index_elements=["tenant_id", "user_id"])
+    )
+    return session.get(GovernanceSubjectState, (tenant_id, user_id))
+
+
+def _due_at(state: GovernanceSubjectState, now: datetime) -> datetime:
+    return max(
+        now + timedelta(seconds=1),
+        min(
+            (state.profile_last_change_at or now) + PROFILE_QUIET,
+            (state.profile_first_dirty_at or now) + PROFILE_MAX_WAIT,
+        ),
+    )
+
+
+def _merge_triggers(task: MemoryTask, followup: MemoryTask) -> None:
+    triggers = list(task.payload.get("trigger_correlation_ids", []))
+    for trigger in [followup.correlation_id, *followup.payload.get("trigger_correlation_ids", [])]:
+        if trigger and trigger not in triggers:
+            triggers.append(trigger)
+    task.payload = {**task.payload, "trigger_correlation_ids": triggers}
+
+
+def _next_activation(session: Session, tenant_id: str, user_id: str,
+                     allow_inferred: bool, now: datetime) -> datetime | None:
+    times = []
+    for memory in session.scalars(select(MemoryItem).where(
+        MemoryItem.tenant_id == tenant_id, MemoryItem.subject_type == "user",
+        MemoryItem.subject_id == user_id, MemoryItem.cognitive_type.in_(["fact", "inference"]),
+        MemoryItem.status == "active", MemoryItem.effective_at > now,
+    )):
+        when = memory.effective_at
+        if (not _eligible_fact(memory, when) or not memory_has_valid_evidence(
+            session, memory, tenant_id=tenant_id, user_id=user_id, now=when,
+        ) or memory.cognitive_type == "inference" and (
+            not allow_inferred or not _eligible_inference(session, memory, when)
+        )):
+            continue
+        times.append(when)
+    return min(times) if times else None
+
+
 def enqueue_profile_rebuild(
-    session: Session, *, tenant_id: str, user_id: str, correlation_id: str | None = None
-) -> MemoryTask:
+    session: Session,
+    *,
+    tenant_id: str,
+    user_id: str,
+    correlation_id: str | None = None,
+    force: bool = False,
+    allow_inferred: bool | None = None,
+) -> MemoryTask | None:
     lock_user(session, tenant_id, user_id)
+    session.flush()
+    allow_inferred = inference_profiles_enabled() if allow_inferred is None else allow_inferred
+    digest, candidates = _snapshot(session, tenant_id, user_id, allow_inferred=allow_inferred)
+    state = _profile_state(session, tenant_id, user_id)
+    now = datetime.now(UTC)
     pending = session.scalars(
         select(MemoryTask)
         .where(
             MemoryTask.tenant_id == tenant_id,
             MemoryTask.task_type == "profile_rebuild",
-            MemoryTask.target_type == "subject",
-            MemoryTask.target_id == user_id,
+            MemoryTask.user_id == user_id,
             MemoryTask.status == "pending",
         )
-        .order_by(MemoryTask.created_at)
-        .limit(1)
-    ).first()
-    if pending is not None:
-        pending.correlation_id = pending.correlation_id or uuid4().hex
-        triggers = list((pending.payload or {}).get("trigger_correlation_ids", []))
-        for trigger in (pending.correlation_id, correlation_id):
-            if trigger and trigger not in triggers:
-                triggers.append(trigger)
-        pending.payload = {**(pending.payload or {}), "trigger_correlation_ids": triggers}
+        .with_for_update()
+    ).one_or_none()
+    changed = state.profile_input != digest
+    activation = _next_activation(session, tenant_id, user_id, allow_inferred, now)
+    activation_only = False
+    if not force and not changed:
+        if pending is not None and correlation_id:
+            triggers = list(pending.payload.get("trigger_correlation_ids", []))
+            if correlation_id not in triggers:
+                pending.payload = {**pending.payload,
+                                   "trigger_correlation_ids": [*triggers, correlation_id]}
+        if pending is not None and not pending.payload.get("activation_only"):
+            return pending
+        if activation is None:
+            if pending is not None:
+                pending.status = "cancelled"
+                pending.completed_at = now
+                state.profile_first_dirty_at = state.profile_last_change_at = None
+                state.profile_evaluated_input = digest
+            return None
+        activation_only = True
+    if (
+        not force
+        and not candidates
+        and state.profile_input is None
+        and activation is None
+        and not session.scalar(
+            select(ProfileProperty.id)
+            .where(
+                ProfileProperty.tenant_id == tenant_id,
+                ProfileProperty.user_id == user_id,
+            )
+            .limit(1)
+        )
+    ):
+        return None
+    if not force and not candidates and activation is not None:
+        activation_only = True
+    if changed:
+        state.profile_input = digest
+        state.profile_last_change_at = now
+        state.profile_first_dirty_at = min(state.profile_first_dirty_at or now, now)
+    if activation_only:
+        state.profile_first_dirty_at = state.profile_last_change_at = activation
+    state.updated_at = now
+    triggers = list((pending.payload or {}).get("trigger_correlation_ids", [])) if pending else []
+    if correlation_id and correlation_id not in triggers:
+        triggers.append(correlation_id)
+    due = now if force else _due_at(state, now)
+    payload = {
+        "watermark": digest,
+        "policy_version": PROFILE_POLICY_VERSION,
+        "allow_inferred": allow_inferred,
+        "activation_only": activation_only,
+        "force": force or bool(pending and pending.payload.get("force")),
+        "trigger_correlation_ids": triggers,
+    }
+    if pending:
+        pending.payload = payload
+        pending.available_at = now if payload["force"] else due
         return pending
-    watermark, _ = _snapshot(session, tenant_id, user_id)
     return enqueue_task(
         session,
         {
@@ -217,11 +415,11 @@ def enqueue_profile_rebuild(
             "target_type": "subject",
             "target_id": user_id,
             "user_id": user_id,
-            "idempotency_key": f"profile_rebuild:v3:{user_id}:{watermark}",
+            "idempotency_key": f"profile_rebuild:v4:{user_id}:{uuid4().hex}",
             "correlation_id": correlation_id or uuid4().hex,
-            "payload": {"watermark": watermark,
-                        "trigger_correlation_ids": [correlation_id] if correlation_id else []},
+            "payload": payload,
             "priority": 50,
+            "available_at": due,
         },
     )
 
@@ -244,20 +442,30 @@ def _desired(
             or item.quote not in memory.content
             or not value
         ):
-            raise ProviderError("profile output is not grounded in an eligible fact")
-        identity = (_scope(memory), value, memory.effective_at, memory.expired_at)
+            raise ProviderError("profile output is not grounded in an eligible memory")
+        identity = (
+            _scope(memory),
+            value,
+            memory.effective_at,
+            memory.expired_at,
+            "explicit" if memory.cognitive_type == "fact" else "inferred",
+        )
         grouped[identity][memory.id] = memory
-    return {identity: (identity[1], list(basis.values())) for identity, basis in grouped.items()}
+    explicit = {identity[:4] for identity in grouped if identity[4] == "explicit"}
+    return {
+        identity: (identity[1], list(basis.values()))
+        for identity, basis in grouped.items()
+        if identity[4] == "explicit" or identity[:4] not in explicit
+    }
 
 
 def _replace(
     session: Session,
     task: MemoryTask,
     desired: dict[ProfileIdentity, tuple[str, list[MemoryItem]]],
-) -> None:
-    from memory_cmic.lifecycle import evidence_group_is_complete
-
+) -> dict[str, int]:
     now = datetime.now(UTC)
+    counts = {"created": 0, "invalidated": 0, "retained": 0}
     profiles = session.scalars(
         select(ProfileProperty)
         .where(
@@ -273,7 +481,7 @@ def _replace(
     remaining = desired.copy()
     versions: dict[ProfileIdentity, int] = defaultdict(int)
     identities = {
-        p.id: (_scope(p), p.property_value, p.effective_at, p.expired_at)
+        p.id: (_scope(p), p.property_value, p.effective_at, p.expired_at, p.assertion_kind)
         for p in profiles
         if p.property_key is None and isinstance(p.property_value, str)
     }
@@ -302,8 +510,10 @@ def _replace(
             )
         ):
             remaining.pop(identity)
+            counts["retained"] += 1
             continue
         current.status = "invalidated"
+        counts["invalidated"] += 1
         current.version += 1
         current.updated_at = now
         for edge in old_edges:
@@ -332,12 +542,14 @@ def _replace(
             property_key=None,
             property_value=value,
             value_type="string",
-            confidence=1,
+            assertion_kind=identity[4],
+            confidence=1 if identity[4] == "explicit" else min(m.confidence for m in basis),
             version=versions[identity] + 1,
             effective_at=identity[2],
             expired_at=identity[3],
         )
         session.add(profile)
+        counts["created"] += 1
         session.flush()
         for memory in basis:
             session.add(
@@ -370,6 +582,7 @@ def _replace(
                 "status": profile.status,
             },
         )
+    return counts
 
 
 def read_profiles(
@@ -379,9 +592,8 @@ def read_profiles(
     user_id: str,
     business_domain: str | None = None,
     now: datetime | None = None,
+    include_inferred: bool = False,
 ) -> list[ProfileProperty]:
-    from memory_cmic.lifecycle import evidence_group_is_complete
-
     check_time = now or datetime.now(UTC)
     business_filter = True
     if business_domain is not None:
@@ -399,6 +611,7 @@ def read_profiles(
             ProfileProperty.effective_at <= check_time,
             or_(ProfileProperty.expired_at.is_(None), ProfileProperty.expired_at > check_time),
             business_filter,
+            True if include_inferred else ProfileProperty.assertion_kind == "explicit",
         )
         .order_by(
             ProfileProperty.property_key.nulls_last(),
@@ -418,30 +631,26 @@ def read_profiles(
         source_valid = {}
         for edge in edges:
             memory = session.get(MemoryItem, edge.upstream_memory_id)
-            if (
-                memory is None
-                or memory.tenant_id != tenant_id
-                or memory.subject_type != "user"
-                or memory.subject_id != user_id
-                or memory.cognitive_type != "fact"
-                or not _eligible_fact(memory, check_time)
-                or (profile.property_key is None and _scope(memory) != _scope(profile))
-            ):
-                source_valid[edge.id] = False
-                continue
-            source_groups = set(
-                session.scalars(
-                    select(MemoryEvidence.evidence_group_id).where(
-                        MemoryEvidence.tenant_id == tenant_id,
-                        MemoryEvidence.downstream_memory_id == memory.id,
-                        MemoryEvidence.relationship_type == "supports",
-                    )
+            valid = bool(
+                memory is not None
+                and _eligible_fact(memory, check_time)
+                and memory.cognitive_type
+                == ("fact" if profile.assertion_kind == "explicit" else "inference")
+                and (profile.property_key is not None or _scope(memory) == _scope(profile))
+                and memory_has_valid_evidence(
+                    session, memory, tenant_id=tenant_id, user_id=user_id, now=check_time
                 )
             )
-            source_valid[edge.id] = any(
-                evidence_group_is_complete(session, group, now=check_time)
-                for group in source_groups
-            )
+            if valid and profile.assertion_kind == "inferred":
+                approval = (memory.metadata_json or {}).get("profile_admission", {})
+                valid = (
+                    _eligible_inference(session, memory, check_time)
+                    and approval.get("accepted") is True
+                    and approval.get("policy_version") == PROFILE_POLICY_VERSION
+                    and approval.get("fingerprint") == _basis_fingerprint(
+                        session, memory, now=check_time)
+                )
+            source_valid[edge.id] = valid
         if any(
             evidence_group_is_complete(session, group, now=check_time)
             and all(source_valid[edge.id] for edge in edges if edge.evidence_group_id == group)
@@ -452,8 +661,14 @@ def read_profiles(
 
 
 def run_once(
-    session_factory: sessionmaker[Session], *, worker_id: str, model: ProfileModel
+    session_factory: sessionmaker[Session],
+    *,
+    worker_id: str,
+    model: ProfileModel,
+    allow_inferred: bool | None = None,
 ) -> bool:
+    with session_factory.begin() as session:
+        finish_exhausted_leases(session)
     with session_factory() as session:
         tenants = session.scalars(
             select(MemoryTask.tenant_id)
@@ -500,8 +715,14 @@ def run_once(
                         user_id = profile.user_id
                     else:
                         raise ValueError("invalid profile rebuild target")
-                    snapshot, memories = _snapshot(session, tenant_id, user_id)
-                    inputs = [{"id": m.id, "content": m.content} for m in memories]
+                    selected_allow_inferred = task.payload.get("allow_inferred", allow_inferred)
+                    snapshot, memories = _snapshot(
+                        session, tenant_id, user_id, allow_inferred=selected_allow_inferred
+                    )
+                    inputs = [
+                        {"id": m.id, "content": m.content, "cognitive_type": m.cognitive_type}
+                        for m in memories
+                    ]
                 proposals: list[ProfileProposal] = []
                 batch: list[dict[str, str]] = []
                 for item in inputs:
@@ -518,17 +739,94 @@ def run_once(
                         batch = candidate
                 if batch:
                     proposals.extend(model.extract(batch))
-                desired = _desired(memories, proposals)
                 with session_factory.begin() as session:
                     task = _leased_task(session, **ownership)
                     lock_user(session, tenant_id, user_id)
-                    current, _ = _snapshot(session, tenant_id, user_id)
+                    current, current_memories = _snapshot(
+                        session, tenant_id, user_id, allow_inferred=selected_allow_inferred
+                    )
                     if current != snapshot:
-                        raise ProviderError("profile evidence changed during rebuild")
+                        # Merge a queued follow-up into this attempt, retaining the oldest wait.
+                        state = _profile_state(session, tenant_id, user_id)
+                        now = datetime.now(UTC)
+                        state.profile_input = current
+                        state.profile_first_dirty_at = state.profile_first_dirty_at or now
+                        state.profile_last_change_at = now
+                        for followup in session.scalars(
+                            select(MemoryTask).where(
+                                MemoryTask.tenant_id == tenant_id,
+                                MemoryTask.user_id == user_id,
+                                MemoryTask.task_type == "profile_rebuild",
+                                MemoryTask.status == "pending",
+                            )
+                        ):
+                            _merge_triggers(task, followup)
+                            followup.status = "cancelled"
+                            followup.completed_at = now
+                        session.flush()
+                        task.status = "pending"
+                        task.worker_id = task.locked_until = task.lease_token = None
+                        task.available_at = _due_at(state, now)
+                        task.last_error = None
+                        task.error_json = None
+                        task.payload = {
+                            **task.payload,
+                            "watermark": current,
+                            "force": False,
+                            "deferred_reason": "INPUT_CHANGED",
+                        }
+                        return True
                     task.user_id = user_id
-                    _replace(session, task, desired)
-                    if not finish_task(session, **ownership, status="succeeded", results=[]):
+                    desired = _desired(current_memories, proposals)
+                    accepted = {m.id for _, basis in desired.values() for m in basis}
+                    for memory in current_memories:
+                        if memory.cognitive_type == "inference":
+                            memory.metadata_json = {
+                                **(memory.metadata_json or {}),
+                                "profile_admission": {
+                                    "accepted": memory.id in accepted,
+                                    "policy_version": PROFILE_POLICY_VERSION,
+                                    "fingerprint": _basis_fingerprint(session, memory),
+                                    "reason": "DURABLE_PROFILE"
+                                    if memory.id in accepted
+                                    else "NO_DURABLE_PROFILE",
+                                    "evaluated_at": datetime.now(UTC).isoformat(),
+                                },
+                            }
+                    counts = _replace(session, task, desired)
+                    state = _profile_state(session, tenant_id, user_id)
+                    state.profile_input = state.profile_evaluated_input = current
+                    state.profile_first_dirty_at = state.profile_last_change_at = None
+                    # Follow-ups for the same input are covered by this successful result.
+                    for followup in session.scalars(
+                        select(MemoryTask).where(
+                            MemoryTask.tenant_id == tenant_id,
+                            MemoryTask.user_id == user_id,
+                            MemoryTask.task_type == "profile_rebuild",
+                            MemoryTask.status == "pending",
+                        )
+                    ):
+                        if not followup.payload.get("force"):
+                            _merge_triggers(task, followup)
+                            followup.status = "cancelled"
+                            followup.completed_at = datetime.now(UTC)
+                    if not finish_task(
+                        session,
+                        **ownership,
+                        status="succeeded",
+                        results=[
+                            {
+                                "kind": "profile_rebuild",
+                                "input": current,
+                                "properties": len(desired),
+                                **counts,
+                            }
+                        ],
+                    ):
                         raise LeaseLostError("task lease was lost")
+                    enqueue_profile_rebuild(session, tenant_id=tenant_id, user_id=user_id,
+                                            allow_inferred=selected_allow_inferred,
+                                            correlation_id=task.correlation_id)
         except ValueError as exc:
             with session_factory.begin() as session:
                 finish_task(

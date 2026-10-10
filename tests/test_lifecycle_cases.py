@@ -257,11 +257,12 @@ def test_t07_profile_basis_loss_invalidates_profile_and_enqueues_rebuild(
         select(MemoryTask).where(
             MemoryTask.correlation_id == "corr_t07",
             MemoryTask.task_type == "profile_rebuild",
-            MemoryTask.target_id == profile.id,
+            MemoryTask.target_id == profile.user_id,
         )
     ).one()
     assert profile.status == "invalidated"
-    assert task.payload["trigger_version"] == profile.version
+    assert task.target_type == "subject"
+    assert task.payload["watermark"]
 
 
 def test_t09_expired_at_filters_before_ttl_task_and_expire_creates_cleanup(
