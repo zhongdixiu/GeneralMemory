@@ -485,6 +485,9 @@ def test_provider_failure_retries_and_profile_task_stays_pending(governance_cont
         vector = _task(
             session, tenant_id, "vector_upsert", memory_id, 1, model_id=embedder.model_id
         )
+        vector.available_at = (
+            session.scalar(select(func.current_timestamp())) - timedelta(minutes=1)
+        )
         vector_id = vector.id
         profile = enqueue_task(
             session,

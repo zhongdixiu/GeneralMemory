@@ -557,3 +557,16 @@ def test_claim_empty_supported_types_leaves_queue_pending(session):
     task = enqueue_task(session, _pending_task(task_id="empty_types", tenant_id="empty_types"))
     assert claim_tasks(session, tenant_id=task.tenant_id, worker_id="unused", task_types=()) == []
     assert task.status == "pending"
+
+
+def test_renewal_cannot_shorten_an_existing_lease(session: Session) -> None:
+    now = _database_now(session)
+    original_until = now + timedelta(minutes=1)
+    task = enqueue_task(session, {
+        **_pending_task(task_id="lease_no_regression", tenant_id="tenant_lease_no_regression"),
+        "status": "processing", "worker_id": "lease_worker", "locked_until": original_until,
+    })
+    assert renew_task_lease(session, tenant_id=task.tenant_id, task_id=task.id,
+                            worker_id="lease_worker", lease_seconds=1)
+    session.refresh(task)
+    assert task.locked_until == original_until

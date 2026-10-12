@@ -361,8 +361,13 @@ def test_search_follows_real_add_submission_records(read_api, session, kind):
         json={"user_id": "user_1", "query": "撰写报告", "agent_id": "agent_b"},
     )
     assert response.status_code == 200
-    expected = {fact.id} if kind == "target" else set()
-    assert {row["id"] for row in response.json()["results"]} == expected
+    # Separate Agent conversations no longer bind the same message identity to one source.
+    assert response.json()["results"] == []
+    shared = client.post(
+        "/api/v1/memories:search", headers=_headers("agent-b"),
+        json={"user_id": "user_1", "query": "撰写报告"},
+    )
+    assert {row["id"] for row in shared.json()["results"]} == {fact.id}
 
 
 @pytest.mark.parametrize("change", ["history", "version", "user", "missing"])

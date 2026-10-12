@@ -1,0 +1,136 @@
+{
+  "prompt_version": "p02-v11-context-evidence",
+  "executed_at": "2026-10-12T07:50:14.120093+00:00",
+  "model": "qwen3.8-max",
+  "cases": [
+    {
+      "case": "confirmation_with_complete_support",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "confirm",
+          "role": "user",
+          "content": "可以，以后都这样。",
+          "occurred_at": "2026-09-24T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "reply_to_message_id": "proposal"
+        }
+      ],
+      "history": [
+        {
+          "message_id": "proposal",
+          "role": "assistant",
+          "content": "以后周报采用三段式，可以吗？",
+          "occurred_at": "2026-09-24T09:00:00+08:00",
+          "timestamp_origin": "source"
+        }
+      ],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户要求以后周报采用三段式。",
+            "message_ids": [
+              "proposal",
+              "confirm"
+            ],
+            "business_domains": [
+              "方案编写"
+            ],
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "long_term",
+            "change_kind": "none",
+            "effective_at": "2026-09-24T01:00:00Z",
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "confirm",
+            "outcome": "evaluated",
+            "reason": "User confirmed the proposal to use a three-part format for weekly reports going forward."
+          }
+        ]
+      }
+    },
+    {
+      "case": "missing_referent",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "missing",
+          "role": "user",
+          "content": "记住这个。",
+          "occurred_at": "2026-09-24T09:00:00+08:00",
+          "timestamp_origin": "source"
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [],
+        "assessments": [
+          {
+            "message_id": "missing",
+            "outcome": "context_insufficient",
+            "reason": "The message '记住这个' lacks any referent or content to remember; no durable fact can be extracted."
+          }
+        ]
+      }
+    },
+    {
+      "case": "observed_relative_deadline",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "observed",
+          "role": "user",
+          "content": "本周我负责材料审核，下周恢复原安排。",
+          "occurred_at": "2026-09-24T09:00:00+08:00",
+          "timestamp_origin": "adapter_observed"
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [],
+        "assessments": [
+          {
+            "message_id": "observed",
+            "outcome": "context_insufficient",
+            "reason": "The message describes a current-week responsibility and a next-week reversion, but occurred_at is null and timestamp_origin is adapter_observed, so the actual event time is unknown; required dates for temporal resolution are missing."
+          }
+        ]
+      }
+    },
+    {
+      "case": "attachment_reference_without_content",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "attachment",
+          "role": "user",
+          "content": "",
+          "occurred_at": "2026-09-24T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "attachments": [
+            {
+              "file_id": "synthetic-file",
+              "mime_type": "application/pdf"
+            }
+          ]
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [],
+        "assessments": [
+          {
+            "message_id": "attachment",
+            "outcome": "no_durable_value",
+            "reason": "Attachment-only message with no readable content or user-stated facts."
+          }
+        ]
+      }
+    }
+  ]
+}

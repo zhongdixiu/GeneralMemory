@@ -34,10 +34,6 @@ class MessageIdConflict(IngestError):
     code = "MESSAGE_ID_CONFLICT"
 
 
-class SessionOwnerConflict(IngestError):
-    code = "SESSION_OWNER_CONFLICT"
-
-
 class SourceUnavailable(IngestError):
     code = "INVALID_MESSAGE"
 
@@ -97,6 +93,7 @@ def _source_values(
     author_type, author_id = _resolved_author(message, request, auth)
     logical_key = {
         "tenant_id": auth.tenant_id,
+        "caller_agent_id": auth.caller_agent_id,
         "source_system": request.source_system,
         "user_id": request.user_id,
         "session_id": request.session_id,
@@ -143,6 +140,7 @@ def _get_or_create_source(
     existing = session.scalars(
         select(SourceRecord).where(
             SourceRecord.tenant_id == auth.tenant_id,
+            SourceRecord.caller_agent_id == auth.caller_agent_id,
             SourceRecord.source_system == request.source_system,
             SourceRecord.user_id == request.user_id,
             SourceRecord.session_id == request.session_id,
@@ -179,31 +177,34 @@ def _get_or_create_source(
 
 
 def _allocate_batch_seq(
-    session: Session, *, tenant_id: str, source_system: str, session_id: str, user_id: str
+    session: Session, *, tenant_id: str, caller_agent_id: str, source_system: str,
+    session_id: str, user_id: str
 ) -> int:
     session.execute(
         pg_insert(ConversationSession)
         .values(
             tenant_id=tenant_id,
+            caller_agent_id=caller_agent_id,
             source_system=source_system,
             session_id=session_id,
             user_id=user_id,
         )
         .on_conflict_do_nothing(
-            index_elements=["tenant_id", "source_system", "session_id"]
+            index_elements=["tenant_id", "caller_agent_id", "source_system", "user_id",
+                            "session_id"]
         )
     )
     conversation = session.scalars(
         select(ConversationSession)
         .where(
             ConversationSession.tenant_id == tenant_id,
+            ConversationSession.caller_agent_id == caller_agent_id,
+            ConversationSession.user_id == user_id,
             ConversationSession.source_system == source_system,
             ConversationSession.session_id == session_id,
         )
         .with_for_update()
     ).one()
-    if conversation.user_id != user_id:
-        raise SessionOwnerConflict("session_id is already bound to another user")
     batch_seq = conversation.next_batch_seq
     conversation.next_batch_seq += 1
     return batch_seq
@@ -219,7 +220,7 @@ def ingest_and_enqueue(
 ) -> IngestReceipt:
     fingerprint = request_fingerprint(request)
     lock_scope = _canonical_json(
-        [auth.tenant_id, auth.caller_agent_id, idempotency_key]
+        [auth.tenant_id, auth.caller_agent_id, request.user_id, idempotency_key]
     )
     session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
@@ -229,6 +230,7 @@ def ingest_and_enqueue(
         select(MemoryTask).where(
             MemoryTask.tenant_id == auth.tenant_id,
             MemoryTask.caller_agent_id == auth.caller_agent_id,
+            MemoryTask.user_id == request.user_id,
             MemoryTask.idempotency_key == idempotency_key,
         )
     ).one_or_none()
@@ -240,6 +242,7 @@ def ingest_and_enqueue(
     batch_seq = _allocate_batch_seq(
         session,
         tenant_id=auth.tenant_id,
+        caller_agent_id=auth.caller_agent_id,
         source_system=request.source_system,
         session_id=request.session_id,
         user_id=request.user_id,
@@ -251,7 +254,7 @@ def ingest_and_enqueue(
         tenant_id=auth.tenant_id,
         task_type="fact_extract",
         target_type="batch",
-        target_id=f"{request.source_system}:{request.session_id}:{batch_seq}",
+        target_id=f"batch_{uuid4().hex}",
         caller_agent_id=auth.caller_agent_id,
         idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,
@@ -260,7 +263,7 @@ def ingest_and_enqueue(
         user_id=request.user_id,
         session_id=request.session_id,
         batch_seq=batch_seq,
-        payload={"config_version": 1, "request_id": request_id},
+        payload={"config_version": 2, "request_id": request_id},
         max_attempts=5,
     )
     session.add(task)

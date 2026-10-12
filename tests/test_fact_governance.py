@@ -381,6 +381,12 @@ def _test_slice_budget():
         "author_id": "user_worker",
         "tool_status": None,
         "reply_to_message_id": None,
+        "turn_id": None,
+        "timestamp_origin": "source",
+        "tool_name": None,
+        "tool_call_id": None,
+        "tool_calls": [],
+        "attachments": [],
         "start_char": 0,
         "end_char": 180,
     }
@@ -532,7 +538,7 @@ def test_output_truncation_is_split_and_last_fragment_marks_source_processed(
         ).all()
         assert {tuple(sorted(e.evidence_locator.items())) for e in evidence} == {
             (("end_char", 2), ("message_id", "long"), ("start_char", 0)),
-            (("end_char", 4), ("message_id", "long"), ("start_char", 2)),
+            (("end_char", 4), ("message_id", "long"), ("start_char", 0)),
         }
 
 
@@ -602,6 +608,7 @@ def test_delayed_assertion_is_bounded_as_history(worker_context, engine):
     _run(engine, ScriptedModel({"effective_at": datetime(2026, 9, 26, tzinfo=UTC)}))
     with Session(engine) as session:
         current = _memories(session, tenant_id)[0]
+        current_id = current.id
         current.metadata_json = {
             **current.metadata_json,
             "source_occurred_at": "2026-09-26T00:00:00+00:00",
@@ -615,7 +622,10 @@ def test_delayed_assertion_is_bounded_as_history(worker_context, engine):
 
     _run(engine, HistoricalModel())
     with Session(engine) as session:
-        current, historical = _memories(session, tenant_id)
+        memories = _memories(session, tenant_id)
+        assert len(memories) == 2
+        current = next(memory for memory in memories if memory.id == current_id)
+        historical = next(memory for memory in memories if memory.id != current_id)
         assert current.status == "active"
         assert historical.status == "expired"
         assert historical.expired_at == current.effective_at

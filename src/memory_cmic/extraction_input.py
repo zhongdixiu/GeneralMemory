@@ -23,6 +23,45 @@ def input_size(system: str, payload: dict[str, Any]) -> int:
     return len(system.encode()) + len(json.dumps(payload, ensure_ascii=False).encode()) + 512
 
 
+def required_history(targets, history):
+    selected = set()
+    pending = list(targets)
+    while pending:
+        replies = {m.get("reply_to_message_id") for m in pending} - {None}
+        turns = {m.get("turn_id") for m in pending} - {None}
+        calls = {m.get("tool_call_id") for m in pending} - {None}
+        calls.update(c["tool_call_id"] for m in pending for c in m.get("tool_calls", []))
+        pending = []
+        for index, message in enumerate(history):
+            if index in selected:
+                continue
+            linked = (
+                message["message_id"] in replies
+                or (message.get("turn_id") is not None and message.get("turn_id") in turns)
+                or (message.get("tool_call_id") is not None
+                    and message.get("tool_call_id") in calls)
+                or any(c["tool_call_id"] in calls for c in message.get("tool_calls", []))
+                or (message.get("continuation", False)
+                    and message["message_id"] in {m["message_id"] for m in targets})
+            )
+            if linked:
+                selected.add(index)
+                pending.append(message)
+    return [message for index, message in enumerate(history) if index in selected]
+
+
+def select_history(targets, history, *, system, limit):
+    required = required_history(targets, history)
+    chosen = {id(m) for m in required}
+    if input_size(system, {"targets": targets, "history": required}) > limit:
+        return None
+    for message in reversed(history[-30:]):
+        proposed = [m for m in history if id(m) in chosen or m is message]
+        if input_size(system, {"targets": targets, "history": proposed}) <= limit:
+            chosen.add(id(message))
+    return [m for m in history if id(m) in chosen]
+
+
 def build_slices(
     targets: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -31,64 +70,70 @@ def build_slices(
     budget: ExtractionBudget,
 ) -> list[dict[str, Any]]:
     limit = budget.input_tokens - budget.output_tokens
-    fragments = []
+    slices = []
+    prior = list(history)
     for message in targets:
-        start = 0
+        # Repeated/previous messages may supply context, never a duplicate target identity.
+        prior = [m for m in prior if m["message_id"] != message["message_id"]]
         content = message["content"]
-        while start < len(content):
+        start = 0
+        while start < len(content) or (not content and start == 0):
+            minimal = {**message, "content": content[start:start + 1],
+                       "start_char": start, "end_char": min(start + 1, len(content))}
+            if input_size(system, {"targets": [minimal], "history": []}) > limit:
+                raise ValueError("message metadata cannot fit in the model input budget")
+            required = required_history([minimal], prior)
+            if input_size(system, {"targets": [minimal], "history": required}) > limit:
+                slices.append({
+                    "targets": [{**message, "content": content[start:], "start_char": start,
+                                 "end_char": len(content)}],
+                    "history": [], "split_depth": 0, "context_error": "CONTEXT_BUDGET_EXCEEDED",
+                })
+                break
             low, high, end = start + 1, len(content), start
             while low <= high:
                 midpoint = (low + high) // 2
-                fragment = {
-                    **message,
-                    "content": content[start:midpoint],
-                    "start_char": start,
-                    "end_char": midpoint,
-                }
-                if input_size(system, {"targets": [fragment], "history": []}) <= limit:
+                fragment = {**message, "content": content[start:midpoint],
+                            "start_char": start, "end_char": midpoint}
+                if input_size(system, {"targets": [fragment], "history": required}) <= limit:
                     end, low = midpoint, midpoint + 1
                 else:
                     high = midpoint - 1
-            if end == start:
-                raise ValueError("message metadata cannot fit in the model input budget")
             if end < len(content):
                 paragraph = content.rfind("\n", start, end)
                 if paragraph > start:
                     end = paragraph + 1
-            fragments.append(
-                {**message, "content": content[start:end], "start_char": start, "end_char": end}
-            )
+            fragment = {**message, "content": content[start:end],
+                        "start_char": start, "end_char": end}
+            selected = select_history([fragment], prior, system=system, limit=limit)
+            current = {"targets": [fragment], "history": selected, "split_depth": 0}
+            if slices and not slices[-1].get("context_error"):
+                previous = slices[-1]
+                if message["message_id"] not in {m["message_id"] for m in previous["targets"]}:
+                    merged = [*previous["targets"], fragment]
+                    pool = [m for m in prior
+                            if m["message_id"] not in {t["message_id"] for t in merged}]
+                    merged_history = select_history(merged, pool, system=system, limit=limit)
+                    if merged_history is not None:
+                        previous.update(targets=merged, history=merged_history)
+                    else:
+                        slices.append(current)
+                else:
+                    slices.append(current)
+            else:
+                slices.append(current)
+            if not content:
+                prior.append(fragment)
+                break
+            # Keep an exact, bounded overlap to understand the next long-message fragment.
+            prior = [m for m in prior if not m.get("continuation")]
+            if end < len(content):
+                overlap_start = max(start, end - 256)
+                prior.append({**fragment, "content": content[overlap_start:end],
+                              "start_char": overlap_start, "continuation": True})
+            else:
+                prior.append(fragment)
             start = end
-    groups = []
-    group = []
-    for fragment in fragments:
-        if group and (
-            fragment["message_id"] in {m["message_id"] for m in group}
-            or input_size(system, {"targets": [*group, fragment], "history": []}) > limit
-        ):
-            groups.append(group)
-            group = []
-        group.append(fragment)
-    if group:
-        groups.append(group)
-    slices = []
-    prior = list(history)
-    for group in groups:
-        selected = []
-        related = {m.get("reply_to_message_id") for m in group}
-        choices = sorted(
-            enumerate(prior[-30:]),
-            key=lambda pair: (pair[1]["message_id"] in related, pair[0]),
-            reverse=True,
-        )
-        chosen = set()
-        for position, previous in choices:
-            proposed = [m for i, m in enumerate(prior[-30:]) if i in chosen or i == position]
-            if input_size(system, {"targets": group, "history": proposed}) <= limit:
-                selected = proposed
-                chosen.add(position)
-        slices.append({"targets": group, "history": selected, "split_depth": 0})
-        prior.extend(group)
     return slices
 
 

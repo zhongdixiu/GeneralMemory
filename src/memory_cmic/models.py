@@ -75,6 +75,7 @@ class SourceRecord(Base):
             "user_id",
             "session_id",
             "message_id",
+            "caller_agent_id",
             name="uq_source_record_message",
         ),
         CheckConstraint("version > 0", name="ck_source_record_version_positive"),
@@ -99,6 +100,7 @@ class SourceRecord(Base):
     user_id: Mapped[str | None] = mapped_column(String(128))
     session_id: Mapped[str | None] = mapped_column(String(128))
     message_id: Mapped[str | None] = mapped_column(String(256))
+    caller_agent_id: Mapped[str | None] = mapped_column(String(128))
     external_ref_id: Mapped[str] = mapped_column(String(128), nullable=False)
     author_type: Mapped[str] = mapped_column(String(32), nullable=False)
     author_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -132,6 +134,7 @@ Index(
     "ix_source_record_conversation",
     SourceRecord.tenant_id,
     SourceRecord.source_system,
+    SourceRecord.caller_agent_id,
     SourceRecord.user_id,
     SourceRecord.session_id,
 )
@@ -141,12 +144,14 @@ class ConversationSession(Base):
     __tablename__ = "conversation_session"
     __table_args__ = (
         PrimaryKeyConstraint(
-            "tenant_id", "source_system", "session_id", name="pk_conversation_session"
+            "tenant_id", "caller_agent_id", "source_system", "user_id", "session_id",
+            name="pk_conversation_session"
         ),
         CheckConstraint("next_batch_seq > 0", name="ck_conversation_next_batch_seq_positive"),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    caller_agent_id: Mapped[str] = mapped_column(String(128), nullable=False)
     source_system: Mapped[str] = mapped_column(String(64), nullable=False)
     session_id: Mapped[str] = mapped_column(String(128), nullable=False)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -475,6 +480,7 @@ class MemoryTask(Base):
             "tenant_id",
             "caller_agent_id",
             "idempotency_key",
+            "user_id",
             name="uq_memory_task_idempotency",
         ),
         CheckConstraint("attempt_count >= 0", name="ck_task_attempt_count"),
@@ -556,6 +562,7 @@ Index(
     "ix_memory_task_conversation",
     MemoryTask.tenant_id,
     MemoryTask.source_system,
+    MemoryTask.caller_agent_id,
     MemoryTask.user_id,
     MemoryTask.session_id,
     MemoryTask.batch_seq,
@@ -581,6 +588,14 @@ Index(
     MemoryTask.idempotency_key,
     unique=True,
     postgresql_where=text("caller_agent_id IS NULL"),
+)
+Index(
+    "uq_service_task_key",
+    MemoryTask.tenant_id,
+    MemoryTask.caller_agent_id,
+    MemoryTask.idempotency_key,
+    unique=True,
+    postgresql_where=text("caller_agent_id IS NOT NULL AND user_id IS NULL"),
 )
 
 

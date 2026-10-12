@@ -21,6 +21,8 @@ def enqueue_task(session: Session, data: Mapping[str, Any]) -> MemoryTask:
         select(MemoryTask).where(
             MemoryTask.tenant_id == data["tenant_id"],
             caller_filter,
+            *([MemoryTask.user_id == data.get("user_id")]
+              if caller_agent_id is not None else []),
             MemoryTask.idempotency_key == data["idempotency_key"],
         )
     ).one_or_none()
@@ -116,6 +118,8 @@ def claim_tasks(
                               FROM memory_task AS prior
                               WHERE prior.tenant_id = candidate.tenant_id
                                 AND prior.source_system = candidate.source_system
+                                AND prior.caller_agent_id IS NOT DISTINCT FROM
+                                    candidate.caller_agent_id
                                 AND prior.user_id = candidate.user_id
                                 AND prior.session_id = candidate.session_id
                                 AND prior.batch_seq < candidate.batch_seq
@@ -195,7 +199,8 @@ def renew_task_lease(
         text(
             """
             UPDATE memory_task
-            SET locked_until = clock_timestamp() + make_interval(secs => :lease_seconds),
+            SET locked_until = GREATEST(
+                    locked_until, clock_timestamp() + make_interval(secs => :lease_seconds)),
                 updated_at = CURRENT_TIMESTAMP
             WHERE tenant_id = :tenant_id
               AND id = :task_id

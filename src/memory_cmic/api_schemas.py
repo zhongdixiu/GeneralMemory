@@ -83,8 +83,6 @@ class Message(StrictRequestModel):
     @field_validator("content")
     @classmethod
     def validate_content(cls, value: str) -> str:
-        if not value:
-            raise ValueError("content must not be empty")
         if len(value.encode()) > 64 * 1024:
             raise ValueError("content exceeds 64 KiB")
         return value
@@ -98,6 +96,12 @@ class Message(StrictRequestModel):
 
     @model_validator(mode="after")
     def validate_role_metadata(self):
+        if not self.content.strip() and not (
+            self.metadata.tool_calls or self.metadata.attachments
+        ):
+            raise ValueError("message requires text, tool calls or attachment references")
+        if self.role == "tool" and self.metadata.tool_status is None:
+            self.metadata.tool_status = "unknown"
         tool_fields = (
             self.metadata.tool_name,
             self.metadata.tool_call_id,
@@ -132,9 +136,13 @@ class AddRequest(StrictRequestModel):
         for message in [*self.history_messages, *self.messages]:
             if message.role == "user" and message.author_id not in {None, self.user_id}:
                 raise ValueError("user message author_id must equal user_id")
-        if self.history_messages:
-            latest_history = max(message.occurred_at for message in self.history_messages)
-            earliest_target = min(message.occurred_at for message in self.messages)
+        source_history = [m for m in self.history_messages
+                          if m.metadata.timestamp_origin == "source"]
+        source_targets = [m for m in self.messages
+                          if m.metadata.timestamp_origin == "source"]
+        if source_history and source_targets:
+            latest_history = max(message.occurred_at for message in source_history)
+            earliest_target = min(message.occurred_at for message in source_targets)
             if latest_history > earliest_target:
                 raise ValueError("history_messages must not contain future messages")
         return self
@@ -154,6 +162,21 @@ class MemoryResult(BaseModel):
     id: str
     memory: str
     event: Literal["ADD"] = "ADD"
+
+
+class ProcessingResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    start_char: int | None = None
+    end_char: int | None = None
+    outcome: Literal[
+        "added", "evidence_added", "already_exists", "superseded", "disputed", "historical",
+        "no_durable_value", "context_insufficient", "evaluated_no_fact",
+        "already_processed", "time_unresolved",
+    ]
+    memory_ids: list[str] = Field(default_factory=list)
+    reason: str | None = None
 
 
 class SearchRequest(StrictRequestModel):
@@ -214,6 +237,7 @@ class TaskResponse(BaseModel):
     task_id: str
     status: TaskStatus
     results: list[MemoryResult] | None
+    processing_results: list[ProcessingResult] | None = None
     error: ErrorInfo | None
 
 

@@ -19,7 +19,7 @@ class OutputLimitError(ProviderError):
     pass
 
 
-PROMPT_VERSION = "p02-v10-resolved-subjects"
+PROMPT_VERSION = "p02-v11-context-evidence"
 
 EXTRACTION_PROMPT = (
     "Extract atomic facts with value beyond a single task, newly stated or explicitly "
@@ -37,8 +37,10 @@ EXTRACTION_PROMPT = (
     "'李明负责以后的邮件审批。'. Never guess a person, place or object. "
     "Keep literal names, titles and verbatim quotations unchanged: '我喜欢电影《我和我的祖国》。' "
     "becomes '用户喜欢电影《我和我的祖国》。', not a replacement inside the title. "
-    "History is context only and cannot independently produce facts. Cite target message_ids; "
-    "at least one cited message must be user. Never infer user facts from "
+    "History cannot independently produce facts. Cite all necessary target AND history "
+    "message_ids as one support group; at least one cited message must be a TARGET user. "
+    "A confirmation must cite the proposal/question that gives it meaning. "
+    "Attachment references are not readable attachment contents. Never infer user facts from "
     "assistant/system/tool alone. "
     "Business labels describe applicable scenarios, not source systems or mentioned topics. "
     "Use communication for SMS, phone calls and instant messaging (excluding email); "
@@ -84,7 +86,11 @@ EXTRACTION_PROMPT = (
     "notifications such as 'generating the file' or 'email sent'. Preserve uncertainty: "
     "a possible plan is not a definite future event. "
     "Preserve temporal meaning in self-contained text. Resolve stated dates relative to "
-    "occurred_at, "
+    "occurred_at only when timestamp_origin=source. adapter_observed is ingestion observation "
+    "time, not the original event time: do not resolve relative dates or infer state recency "
+    "from it. Such messages have occurred_at=null in model input. For example, '本周我负责 "
+    "材料审核，下周恢复原安排' with unknown event time must produce NO fact and a "
+    "context_insufficient assessment. Missing required dates must be context_insufficient. "
     "not processing time. Use ISO8601 timestamps with timezone; never fabricate precision. "
     "expired_at is only an explicitly stated deadline or historical interval boundary; "
     "never compute a default TTL. For 'valid this week', use the next Monday at 00:00 in "
@@ -97,12 +103,17 @@ EXTRACTION_PROMPT = (
     "for explicit "
     "resolution of contradictory prior statements, update only for an explicit "
     "current-state change. "
-    "Unresolved references, missing context and no durable value should yield no fact. "
+    "Unresolved references or missing necessary context yield no fact and a "
+    "context_insufficient assessment; no durable value yields no_durable_value. "
+    "For EACH target user message, return an assessment of evaluated, no_durable_value "
+    "or context_insufficient with a short reason (no chain-of-thought). A message may have "
+    "facts and also context_insufficient when another statement lacks context. "
     "Return JSON {facts:[{memory:string,message_ids:[string],business_domains:[labels]|null,"
     "project_limited:boolean,project_context:string|null,"
     "temporal_kind:current|historical,retention_kind:temporary|regular|long_term,"
     "change_kind:none|correction|update|clarification,effective_at:timestamp|null,"
-    "expired_at:timestamp|null}]}. Return {facts:[]} when there is no durable fact."
+    "expired_at:timestamp|null}],assessments:[{message_id:string,"
+    "outcome:evaluated|no_durable_value|context_insufficient,reason:string}]}."
 )
 
 GOVERNANCE_PROMPT = (
@@ -257,19 +268,31 @@ def candidate_skip_reason(fact: ExtractedFact) -> str | None:
     return None
 
 
+class ExtractionAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    outcome: Literal["evaluated", "no_durable_value", "context_insufficient"]
+    reason: str = Field(min_length=1, max_length=512)
+
+
 class ExtractionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     facts: list[ExtractedFact]
+    assessments: list[ExtractionAssessment] = Field(default_factory=list)
 
 
-def validate_fact_evidence(facts: list[ExtractedFact], targets: list[dict[str, Any]]) -> None:
-    target_ids = {message["message_id"] for message in targets}
+def validate_fact_evidence(
+    facts: list[ExtractedFact], targets: list[dict[str, Any]],
+    history: list[dict[str, Any]] | None = None,
+) -> None:
+    input_ids = {message["message_id"] for message in [*targets, *(history or [])]}
     user_ids = {message["message_id"] for message in targets if message["role"] == "user"}
     for fact in facts:
         cited = set(fact.message_ids)
-        if not cited.issubset(target_ids):
-            raise ProviderError("extraction output cites a non-target message_id")
+        if not cited.issubset(input_ids):
+            raise ProviderError("extraction output cites a non-target/non-history message_id")
         if not cited.intersection(user_ids):
             raise ProviderError("fact evidence must include a target user message")
 
@@ -379,8 +402,22 @@ class QwenFactModel:
     def extract(
         self, *, targets: list[dict[str, Any]], history: list[dict[str, Any]]
     ) -> list[ExtractedFact]:
+        return self.extract_with_outcomes(targets=targets, history=history).facts
+
+    def extract_with_outcomes(
+        self, *, targets: list[dict[str, Any]], history: list[dict[str, Any]]
+    ) -> ExtractionOutput:
         try:
-            raw = self._json_completion(EXTRACTION_PROMPT, {"history": history, "targets": targets})
+            def model_messages(messages):
+                return [
+                    {**message, "occurred_at": None}
+                    if message.get("timestamp_origin") == "adapter_observed" else message
+                    for message in messages
+                ]
+
+            raw = self._json_completion(EXTRACTION_PROMPT, {
+                "history": model_messages(history), "targets": model_messages(targets),
+            })
             required = {
                 "business_domains",
                 "project_limited",
@@ -398,8 +435,17 @@ class QwenFactModel:
                 )
         except ValidationError as exc:
             raise ProviderError(f"invalid extraction output: {exc}") from exc
-        validate_fact_evidence(output.facts, targets)
-        return output.facts
+        validate_fact_evidence(output.facts, targets, history)
+        user_ids = {m["message_id"] for m in targets if m["role"] == "user"}
+        if "assessments" in raw:
+            ids = [a.message_id for a in output.assessments]
+            if set(ids) != user_ids or len(ids) != len(set(ids)):
+                raise ProviderError("assessments must cover every target user exactly once")
+            cited_ids = {mid for fact in output.facts for mid in fact.message_ids}
+            for assessment in output.assessments:
+                if assessment.outcome == "no_durable_value" and assessment.message_id in cited_ids:
+                    raise ProviderError("no_durable_value contradicts extracted facts")
+        return output
 
     def select_applicable(
         self, *, query: str, business_domain: str, candidates: list[dict[str, Any]]

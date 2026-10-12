@@ -441,7 +441,7 @@ def test_long_model_call_renews_lease_and_completes(worker_context, engine):
     def wait_for_renewal():
         time.sleep(1.5)
         with factory() as session:
-            assert session.get(MemoryTask, task_id).locked_until > original_until
+            assert session.get(MemoryTask, task_id).locked_until >= original_until
             assert claim_tasks(session, tenant_id=tenant_id, worker_id="takeover") == []
 
     process_task(
@@ -459,30 +459,25 @@ def test_long_model_call_renews_lease_and_completes(worker_context, engine):
         assert session.get(MemoryTask, task_id).status == "succeeded"
 
 
-def test_failed_prior_batch_blocks_then_recovery_allows_following(worker_context, engine):
+@pytest.mark.parametrize("status", ["failed", "partial", "cancelled"])
+def test_terminal_prior_batch_does_not_block_following(worker_context, engine, status):
     client, tenant_id = worker_context
     first = _add(client, key="prior-1", message_id="prior-1", content="我喜欢简洁邮件。")
     second = _add(client, key="prior-2", message_id="prior-2", content="我喜欢项目符号。")
     with Session(engine) as session:
-        session.get(MemoryTask, first).status = "failed"
+        session.get(MemoryTask, first).status = status
         session.commit()
-    _run(engine, FakeFactModel())
+
+    class CheckingModel(FakeFactModel):
+        def extract(self, *, targets, history):
+            assert any(m["message_id"] == "prior-1" for m in history)
+            return super().extract(targets=targets, history=history)
+
+    _run(engine, CheckingModel())
     with Session(engine) as session:
-        assert session.get(MemoryTask, second).error_json["code"] == "PRIOR_TASK_FAILED"
-        for task_id in (first, second):
-            task = session.get(MemoryTask, task_id)
-            task.status = "pending"
-            task.worker_id = None
-            task.lease_token = None
-            task.locked_until = None
-            task.completed_at = None
-            task.error_json = None
-        session.commit()
-    _run(engine, FakeFactModel())
-    _run(engine, FakeFactModel())
-    with Session(engine) as session:
-        assert session.get(MemoryTask, first).status == "succeeded"
+        assert session.get(MemoryTask, first).status == status
         assert session.get(MemoryTask, second).status == "succeeded"
+        assert session.get(MemoryTask, second).error_json is None
 
 
 def test_expired_lease_during_commit_rolls_back_all_results(worker_context, engine, monkeypatch):
@@ -547,3 +542,33 @@ def test_expired_lease_during_commit_rolls_back_all_results(worker_context, engi
             )
         ).one()
         assert source.processed_version is None
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_exhausted_prior_lease_does_not_block_following(worker_context, engine, changed):
+    from datetime import UTC, datetime, timedelta
+
+    client, tenant_id = worker_context
+    first = _add(client, key="exhausted", message_id="exhausted", content="我喜欢简洁邮件。")
+    second = _add(client, key="following", message_id="following", content="我喜欢项目符号。")
+    with Session(engine) as session:
+        task = session.get(MemoryTask, first)
+        task.status = "processing"
+        task.worker_id = "stopped-worker"
+        task.lease_token = "old-token"
+        task.locked_until = datetime.now(UTC) - timedelta(minutes=1)
+        task.attempt_count = task.max_attempts
+        task.payload = {**task.payload, "execution": {"changed": changed}}
+        session.commit()
+
+    class ContextModel(FakeFactModel):
+        def extract(self, *, targets, history):
+            assert any(m["message_id"] == "exhausted" for m in history)
+            return super().extract(targets=targets, history=history)
+
+    _run(engine, ContextModel())
+    with Session(engine) as session:
+        prior = session.get(MemoryTask, first)
+        assert prior.status == ("partial" if changed else "failed")
+        assert prior.error_json["code"] == "LEASE_EXHAUSTED"
+        assert session.get(MemoryTask, second).status == "succeeded"

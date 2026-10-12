@@ -231,14 +231,21 @@ def _matching_source_ids(
                 MemoryTaskSource.tenant_id == tenant_id,
                 MemoryTaskSource.source_id == SourceRecord.id,
                 MemoryTaskSource.source_version == SourceRecord.version,
-                MemoryTaskSource.kind == "target",
+                or_(
+                    MemoryTaskSource.kind == "target",
+                    (MemoryTaskSource.kind == "history")
+                    & (SourceRecord.caller_agent_id == agent_id),
+                ),
                 MemoryTask.task_type == "fact_extract",
                 MemoryTask.user_id == user_id,
                 MemoryTask.caller_agent_id == agent_id,
             )
             .exists()
         )
-        statement = statement.where(submitted)
+        statement = statement.where(
+            submitted,
+            or_(SourceRecord.caller_agent_id.is_(None), SourceRecord.caller_agent_id == agent_id),
+        )
     return set(session.scalars(statement))
 
 

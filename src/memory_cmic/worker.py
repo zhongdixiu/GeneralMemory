@@ -15,12 +15,18 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, aliased, sessionmaker
 
 from memory_cmic.audit import record_audit
 from memory_cmic.business_scenes import normalize_fact_scenes
 from memory_cmic.db import create_database_engine
-from memory_cmic.extraction_input import ExtractionBudget, build_slices, input_size, split_slice
+from memory_cmic.extraction_input import (
+    ExtractionBudget,
+    build_slices,
+    input_size,
+    select_history,
+    split_slice,
+)
 from memory_cmic.governance_state import mark_dirty
 from memory_cmic.lifecycle import govern_memory
 from memory_cmic.models import (
@@ -37,6 +43,7 @@ from memory_cmic.providers import (
     PROMPT_VERSION,
     Embedder,
     ExtractedFact,
+    ExtractionAssessment,
     FactModel,
     GovernanceDecision,
     OutputLimitError,
@@ -50,6 +57,7 @@ from memory_cmic.settings import Settings
 from memory_cmic.task_queue import (
     claim_tasks,
     fail_and_retry_task,
+    finish_exhausted_leases,
     finish_task,
     renew_task_lease,
 )
@@ -97,6 +105,7 @@ class FactDecision:
     scope_fingerprint: str
     memory_id: str
     conflict_group_id: str | None
+    skip_reason: str | None = None
 
 
 @contextmanager
@@ -160,6 +169,12 @@ def _source_message(source: SourceRecord) -> dict[str, Any]:
         "author_id": source.author_id,
         "tool_status": metadata.get("tool_status"),
         "reply_to_message_id": metadata.get("reply_to_message_id"),
+        "turn_id": metadata.get("turn_id"),
+        "timestamp_origin": metadata.get("timestamp_origin", "source"),
+        "tool_name": metadata.get("tool_name"),
+        "tool_call_id": metadata.get("tool_call_id"),
+        "tool_calls": metadata.get("tool_calls", []),
+        "attachments": metadata.get("attachments", []),
     }
 
 
@@ -193,57 +208,142 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
     if not target_rows:
         raise WorkerInputError("fact extraction task has no target sources")
 
-    targets: list[dict[str, Any]] = []
-    source_ids: dict[str, str] = {}
+    targets = []
+    repeated = []
     for association, source in target_rows:
         if source.status != "active" or source.version != association.source_version:
             raise WorkerInputError("target source is unavailable")
-        if source.processed_version == source.version:
-            association.status = "skipped"
-            continue
         if source.message_id is None:
             raise WorkerInputError("target source has no message_id")
-        targets.append(_source_message(source))
-        source_ids[source.message_id] = source.id
+        if source.processed_version == source.version:
+            association.status = "skipped"
+            repeated.append(source)
+        else:
+            targets.append(_source_message(source))
 
-    explicit_history = [
-        _source_message(source)
-        for association, source in history_rows
-        if source.status == "active" and source.version == association.source_version
-    ]
-    previous_rows = (
-        session.execute(
-            select(SourceRecord)
-            .join(
-                MemoryTaskSource,
-                (MemoryTaskSource.tenant_id == SourceRecord.tenant_id)
-                & (MemoryTaskSource.source_id == SourceRecord.id),
-            )
-            .join(
-                MemoryTask,
-                (MemoryTask.tenant_id == MemoryTaskSource.tenant_id)
-                & (MemoryTask.id == MemoryTaskSource.task_id),
-            )
-            .where(
-                MemoryTask.tenant_id == task.tenant_id,
-                MemoryTask.source_system == task.source_system,
-                MemoryTask.user_id == task.user_id,
-                MemoryTask.session_id == task.session_id,
-                MemoryTask.batch_seq < task.batch_seq,
-                MemoryTask.status.in_(["succeeded", "partial"]),
-                MemoryTaskSource.kind == "target",
-                SourceRecord.status == "active",
-            )
-            .order_by(MemoryTask.batch_seq.desc(), MemoryTaskSource.position.desc())
-            .limit(30)
+    # A task boundary is its accepted batch sequence, independent of extraction success.
+    query = (
+        select(MemoryTaskSource, SourceRecord, MemoryTask.batch_seq)
+        .join(SourceRecord, (SourceRecord.tenant_id == MemoryTaskSource.tenant_id)
+              & (SourceRecord.id == MemoryTaskSource.source_id))
+        .join(MemoryTask, (MemoryTask.tenant_id == MemoryTaskSource.tenant_id)
+              & (MemoryTask.id == MemoryTaskSource.task_id))
+        .where(
+            MemoryTask.tenant_id == task.tenant_id,
+            MemoryTask.caller_agent_id == task.caller_agent_id,
+            MemoryTask.source_system == task.source_system,
+            MemoryTask.user_id == task.user_id,
+            MemoryTask.session_id == task.session_id,
+            MemoryTask.batch_seq < task.batch_seq,
+            SourceRecord.caller_agent_id == task.caller_agent_id,
+            SourceRecord.status == "active",
+            SourceRecord.version == MemoryTaskSource.source_version,
         )
-        .scalars()
-        .all()
     )
-    previous_history = [_source_message(source) for source in reversed(previous_rows)]
-    seen = {message.get("message_id") for message in previous_history}
-    history = [*previous_history]
-    history.extend(message for message in explicit_history if message.get("message_id") not in seen)
+    first_association = aliased(MemoryTaskSource)
+    first_task = aliased(MemoryTask)
+    first_target_batch = (
+        select(func.min(first_task.batch_seq))
+        .join(first_association, first_association.task_id == first_task.id)
+        .where(first_association.source_id == SourceRecord.id,
+               first_association.kind == "target")
+        .correlate(SourceRecord).scalar_subquery()
+    )
+    recent = session.execute(
+        query.where(MemoryTaskSource.kind == "target",
+                    MemoryTask.batch_seq == first_target_batch)
+        .order_by(MemoryTask.batch_seq.desc(), MemoryTaskSource.position.desc()).limit(30)
+    ).all()
+    anchor = aliased(MemoryTaskSource)
+    anchor_source = aliased(SourceRecord)
+    anchored_history = (
+        select(anchor.source_id)
+        .join(anchor_source, anchor_source.id == anchor.source_id)
+        .where(
+            anchor.task_id == MemoryTaskSource.task_id,
+            anchor.kind == "target",
+            anchor.source_version == anchor_source.version,
+            anchor_source.metadata_json["timestamp_origin"].as_string() == "source",
+            anchor_source.occurred_at >= SourceRecord.occurred_at,
+        ).correlate(MemoryTaskSource, SourceRecord).exists()
+    )
+    supplements = session.execute(
+        query.where(MemoryTaskSource.kind == "history",
+                    SourceRecord.metadata_json["timestamp_origin"].as_string() == "source",
+                    anchored_history)
+        .order_by(SourceRecord.occurred_at.desc()).limit(30)
+    ).all()
+    explicit = [source for association, source in history_rows
+                if source.status == "active" and source.version == association.source_version]
+    selected = {source.message_id: (source, seq, association.position)
+                for association, source, seq in reversed(recent)}
+    for source in [*explicit, *repeated]:
+        selected.setdefault(source.message_id, (source, task.batch_seq, -1))
+
+    # Timestamped history is inserted before its chronological anchor, never appended as
+    # a new utterance. Observed history remains explicit-only unless referenced later.
+    for association, source, seq in supplements:
+        selected.setdefault(source.message_id, (source, seq, association.position))
+
+    target_source_ids = {source.id for _, source, _ in recent}
+    pending = list(targets)
+    examined = set()
+    while pending:
+        ids = {m.get("reply_to_message_id") for m in pending} - {None}
+        turns = {m.get("turn_id") for m in pending} - {None}
+        calls = {m.get("tool_call_id") for m in pending} - {None}
+        calls.update(call["tool_call_id"] for m in pending for call in m.get("tool_calls", []))
+        conditions = [SourceRecord.message_id.in_(ids)]
+        if turns:
+            conditions.append(SourceRecord.metadata_json["turn_id"].as_string().in_(turns))
+        if calls:
+            conditions.extend([
+                SourceRecord.metadata_json["tool_call_id"].as_string().in_(calls),
+                *[SourceRecord.metadata_json["tool_calls"].contains(
+                    [{"tool_call_id": call}]) for call in calls],
+            ])
+        linked = session.execute(query.where(or_(*conditions)).order_by(
+            MemoryTask.batch_seq, MemoryTaskSource.position)).all()
+        pending = []
+        for association, source, seq in linked:
+            if association.kind == "target":
+                target_source_ids.add(source.id)
+            selected.setdefault(source.message_id, (source, seq, association.position))
+            if source.id not in examined:
+                examined.add(source.id)
+                pending.append(_source_message(source))
+
+    prior_ids = set(selected)
+    for message in targets:
+        reply = message.get("reply_to_message_id")
+        if reply and reply not in prior_ids:
+            message["context_gaps"] = [{"code": "UNKNOWN_REPLY", "message_id": reply}]
+        prior_ids.add(message["message_id"])
+    target_ids = {m["message_id"] for m in targets}
+    recent_ids = {row[1].id for row in recent}
+    ordered_targets = sorted(
+        (item for item in selected.values() if item[0].id in recent_ids),
+        key=lambda item: (item[1], item[2]),
+    )
+    def context_order(item):
+        source, seq, position = item
+        if source.id in target_source_ids or source in repeated:
+            return (seq, position, 1, "", 0)
+        if (source.metadata_json or {}).get("timestamp_origin", "source") == "source":
+            following = next((row for row in ordered_targets
+                              if row[0].occurred_at >= source.occurred_at), None)
+            if following:
+                return (following[1], following[2], 0, source.occurred_at.isoformat(), position)
+            if ordered_targets and source.occurred_at < ordered_targets[0][0].occurred_at:
+                return (0, -1, 0, source.occurred_at.isoformat(), position)
+        return (seq, -1, 0, source.occurred_at.isoformat(), position)
+
+    history = [_source_message(source) for source, _, _ in
+               sorted(selected.values(), key=context_order)
+               if source.message_id not in target_ids]
+    used_sources = [source for _, source in target_rows]
+    used_sources.extend(source for source, _, _ in selected.values())
+    source_ids = {source.message_id: source.id for source in used_sources}
     return TaskInput(
         task_id=task.id,
         tenant_id=task.tenant_id,
@@ -271,7 +371,7 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
                 "version": source.version,
                 "message": _source_message(source),
             }
-            for source in [*(source for _, source in associations), *previous_rows]
+            for source in used_sources
         },
         associations=tuple(
             (
@@ -333,15 +433,31 @@ def _add_evidence(
     fact: ExtractedFact,
     memory_id: str,
     initial: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     evidence_count = session.scalar(select(func.count()).select_from(MemoryEvidence).where(
         MemoryEvidence.tenant_id == task_input.tenant_id,
         MemoryEvidence.downstream_memory_id == memory_id,
         MemoryEvidence.status == "active",
     )) if not initial else 0
-    group_id = f"evg_{uuid4().hex}"
+    support = []
     for message_id in dict.fromkeys(fact.message_ids):
         source_id = task_input.source_ids[message_id]
+        state = task_input.source_states[source_id]
+        pieces = [m for m in [*task_input.history, *task_input.targets]
+                  if m["message_id"] == message_id]
+        start = min(m.get("start_char", 0) for m in pieces)
+        end = max(m.get("end_char", len(m["content"])) for m in pieces)
+        support.append((source_id, state["version"], start, end))
+    group_id = "evg_" + hashlib.sha256(json.dumps(
+        [memory_id, sorted(support)], sort_keys=True).encode()).hexdigest()[:60]
+    if session.scalar(select(MemoryEvidence.id).where(
+        MemoryEvidence.tenant_id == task_input.tenant_id,
+        MemoryEvidence.evidence_group_id == group_id,
+    ).limit(1)):
+        return group_id, False
+    for message_id, (source_id, version, start, end) in zip(
+        dict.fromkeys(fact.message_ids), support, strict=True
+    ):
         source = session.get(SourceRecord, source_id)
         session.add(
             MemoryEvidence(
@@ -351,19 +467,12 @@ def _add_evidence(
                 evidence_group_id=group_id,
                 upstream_source_id=source_id,
                 downstream_memory_id=memory_id,
-                upstream_version=source.version,
-                evidence_snippet=next(
-                    m["content"] for m in task_input.targets if m["message_id"] == message_id
-                ),
+                upstream_version=version,
+                evidence_snippet=source.raw_content[start:end],
                 evidence_locator={
                     "message_id": message_id,
-                    **{
-                        k: m[k]
-                        for m in task_input.targets
-                        if m["message_id"] == message_id
-                        for k in ("start_char", "end_char")
-                        if k in m
-                    },
+                    "start_char": start,
+                    "end_char": end,
                 },
             )
         )
@@ -387,7 +496,7 @@ def _add_evidence(
             },
         )
     mark_dirty(session, session.get(MemoryItem, memory_id), from_add=True)
-    return group_id
+    return group_id, True
 
 
 def _scope_filters(fact: ExtractedFact):
@@ -454,7 +563,7 @@ def _fact_time(fact: ExtractedFact, task_input: TaskInput) -> datetime:
     return fact.effective_at or max(
         datetime.fromisoformat(m["occurred_at"])
         for m in task_input.targets
-        if m["message_id"] in fact.message_ids
+        if m["message_id"] in fact.message_ids and m["role"] == "user"
     )
 
 
@@ -527,6 +636,9 @@ def _check_governance(
         for candidate in selected:
             if candidate.get("temporal_kind", "current") == "historical":
                 raise ProviderError("supersession cannot erase a historical interval")
+            if cited.get("timestamp_origin") == "adapter_observed" or candidate.get(
+                "timestamp_origin") == "adapter_observed":
+                raise ProviderError("observed timestamps cannot establish supersession recency")
             source_time = candidate.get("source_occurred_at") or candidate["effective_at"]
             if incoming < datetime.fromisoformat(source_time):
                 raise ProviderError("late input cannot supersede a newer fact")
@@ -566,6 +678,7 @@ def _candidate(memory: MemoryItem) -> dict[str, Any]:
         "conflict_group_id": memory.conflict_group_id,
         "temporal_kind": (memory.metadata_json or {}).get("temporal_kind", "current"),
         "source_occurred_at": (memory.metadata_json or {}).get("source_occurred_at"),
+        "timestamp_origin": (memory.metadata_json or {}).get("timestamp_origin", "source"),
     }
 
 
@@ -648,6 +761,21 @@ def _plan_decisions(
                 decision = fact_model.resolve(
                     fact=fact, candidates=candidates, targets=task_input.targets
                 )
+                unknown_recency = any(
+                    m.get("timestamp_origin") == "adapter_observed"
+                    for m in task_input.targets if m["message_id"] in fact.message_ids
+                ) or any(m.get("timestamp_origin") == "adapter_observed"
+                         for m in candidates if m["id"] in {
+                             *decision.memory_ids, decision.historical_before_id,
+                         })
+                if unknown_recency and (
+                    decision.action in {"SUPERSEDE", "DISPUTE"} or decision.historical_before_id
+                ):
+                    decisions.append(FactDecision(
+                        fact, embedding, decision, fingerprints[scope], "", None,
+                        skip_reason="UNKNOWN_EVENT_TIME",
+                    ))
+                    continue
                 _check_governance(decision, fact, candidates, task_input)
             else:
                 decision = GovernanceDecision(action="ADD")
@@ -699,7 +827,7 @@ def _plan_decisions(
                 "source_occurred_at": max(
                     datetime.fromisoformat(m["occurred_at"])
                     for m in task_input.targets
-                    if m["message_id"] in fact.message_ids
+                    if m["message_id"] in fact.message_ids and m["role"] == "user"
                 ).isoformat(),
             }
             if expiry is None or expiry > datetime.now(UTC):
@@ -717,10 +845,12 @@ def _commit_results(
     task_input: TaskInput,
     decisions: list[FactDecision],
     embedder: Embedder,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], bool, set[int]]:
     from memory_cmic.profile import enqueue_profile_rebuild
 
     results = []
+    changed = False
+    unchanged = set()
     session.execute(
         select(
             func.pg_advisory_xact_lock(
@@ -730,6 +860,8 @@ def _commit_results(
     )
     # Check all scope snapshots before this slice mutates any memory.
     for decision in decisions:
+        if decision.skip_reason:
+            continue
         memories = _scope_memories(session, task_input, decision.fact)
         session.scalars(
             select(MemoryItem)
@@ -741,13 +873,19 @@ def _commit_results(
             session.refresh(memory)
         if _fingerprint(memories) != decision.scope_fingerprint:
             raise ProviderError("governance candidates changed; slice must be retried")
-    for decision in decisions:
+    for index, decision in enumerate(decisions):
+        if decision.skip_reason:
+            continue
         fact, governance = decision.fact, decision.governance
         if governance.action == "DUPLICATE":
-            _add_evidence(
+            _, added = _add_evidence(
                 session, task_input=task_input, fact=fact, memory_id=governance.memory_ids[0]
             )
+            changed = changed or added
+            if not added:
+                unchanged.add(index)
             continue
+        changed = True
         existing = [session.get(MemoryItem, mid) for mid in governance.memory_ids]
         conflict_group = decision.conflict_group_id
         for old in existing:
@@ -800,8 +938,13 @@ def _commit_results(
                 "source_occurred_at": max(
                     datetime.fromisoformat(m["occurred_at"])
                     for m in task_input.targets
-                    if m["message_id"] in fact.message_ids
+                    if m["message_id"] in fact.message_ids and m["role"] == "user"
                 ).isoformat(),
+                "timestamp_origin": "adapter_observed" if any(
+                    m.get("timestamp_origin") == "adapter_observed"
+                    for m in task_input.targets
+                    if m["message_id"] in fact.message_ids and m["role"] == "user"
+                ) else "source",
                 "governance_action": governance.action,
                 "previous_memory_ids": governance.memory_ids,
             },
@@ -809,7 +952,7 @@ def _commit_results(
         )
         session.add(memory)
         session.flush()
-        group_id = _add_evidence(
+        group_id, _ = _add_evidence(
             session, task_input=task_input, fact=fact, memory_id=memory.id, initial=True
         )
         if memory.status == "active" and (
@@ -836,6 +979,11 @@ def _commit_results(
             context={
                 "evidence_group_id": group_id,
                 "message_ids": fact.message_ids,
+                "timestamp_origin": "adapter_observed" if any(
+                    m.get("timestamp_origin") == "adapter_observed"
+                    for m in task_input.targets
+                    if m["message_id"] in fact.message_ids and m["role"] == "user"
+                ) else "source",
                 "governance_action": governance.action,
             },
             state_after={
@@ -847,15 +995,51 @@ def _commit_results(
                 "expired_at": memory.expired_at.isoformat() if memory.expired_at else None,
             },
         )
-    if decisions:
+    if changed:
         session.flush()
         enqueue_profile_rebuild(
             session, tenant_id=task_input.tenant_id, user_id=task_input.user_id,
             correlation_id=task.correlation_id,
         )
-    return [
-        result for result in results if session.get(MemoryItem, result["id"]).status == "active"
-    ]
+    return ([result for result in results
+             if session.get(MemoryItem, result["id"]).status == "active"], changed, unchanged)
+
+
+def _slice_processing_results(session, task_input, decisions, assessments, skipped, unchanged):
+    results = []
+    by_id = {a.message_id: a for a in assessments}
+    for message in task_input.targets:
+        location = {k: message[k] for k in ("message_id", "start_char", "end_char")
+                    if k in message}
+        matching = [(i, d) for i, d in enumerate(decisions)
+                    if message["message_id"] in d.fact.message_ids]
+        for index, decision in matching:
+            if decision.skip_reason:
+                results.append({**location, "outcome": "time_unresolved",
+                                "reason": decision.skip_reason})
+                continue
+            governance = decision.governance
+            memory_id = (governance.memory_ids[0] if governance.action == "DUPLICATE"
+                         else decision.memory_id)
+            memory = session.get(MemoryItem, memory_id)
+            outcome = {"ADD": "added", "DUPLICATE": "evidence_added",
+                       "SUPERSEDE": "superseded", "DISPUTE": "disputed"}[governance.action]
+            if index in unchanged:
+                outcome = "already_exists"
+            elif memory.status == "expired":
+                outcome = "historical"
+            results.append({**location, "outcome": outcome, "memory_ids": [memory_id]})
+        for item in skipped:
+            if message["message_id"] in item["message_ids"]:
+                results.append({**location, "outcome": "time_unresolved", "reason": item["code"]})
+        assessment = by_id.get(message["message_id"])
+        if assessment and assessment.outcome != "evaluated":
+            results.append({**location, "outcome": assessment.outcome, "reason": assessment.reason})
+        elif not matching and not any(message["message_id"] in item["message_ids"]
+                                      for item in skipped):
+            outcome = "evaluated_no_fact" if message["role"] == "user" else "no_durable_value"
+            results.append({**location, "outcome": outcome})
+    return results
 
 
 def _leased_task(session, *, tenant_id, task_id, worker_id, lease_token):
@@ -955,6 +1139,9 @@ def _validate_input(
         or signature != task_input.task_signature
         or actual_associations != task_input.associations
         or states != task_input.source_states
+        or any((source.caller_agent_id, source.user_id, source.source_system, source.session_id)
+               != (task_input.caller_agent_id, task_input.user_id,
+                   task_input.source_system, task_input.session_id) for source in sources)
     ):
         raise WorkerInputError(
             "task input changed or source became unavailable during extraction",
@@ -984,29 +1171,6 @@ def _process_task(
         task = _leased_task(session, **ownership)
         if task.task_type != "fact_extract":
             raise WorkerInputError("unsupported task type")
-        prior_failure = session.scalars(
-            select(MemoryTask.id).where(
-                MemoryTask.tenant_id == task.tenant_id,
-                MemoryTask.source_system == task.source_system,
-                MemoryTask.user_id == task.user_id,
-                MemoryTask.session_id == task.session_id,
-                MemoryTask.batch_seq < task.batch_seq,
-                MemoryTask.status.in_(["failed", "partial", "cancelled"]),
-            )
-        ).first()
-        if prior_failure is not None:
-            if not finish_task(
-                session,
-                **ownership,
-                status="failed",
-                results=[],
-                error={
-                    "code": "PRIOR_TASK_FAILED",
-                    "message": "a prior task in this conversation did not complete",
-                },
-            ):
-                raise LeaseLostError("task lease was lost")
-            return
         execution = task.payload.get("execution")
         if execution is None:
             task_input = _load_task_input(session, task)
@@ -1016,13 +1180,40 @@ def _process_task(
                 )
             except ValueError as exc:
                 raise WorkerInputError(str(exc)) from exc
+            used_ids = {m["message_id"] for current in slices
+                        for m in [*current["targets"], *current["history"]]}
+            used_ids.update(task_input.source_states[source_id]["message"]["message_id"]
+                            for source_id, kind, _, _ in task_input.associations
+                            if kind == "target")
+            source_ids = {mid: sid for mid, sid in task_input.source_ids.items() if mid in used_ids}
+            task_input = replace(
+                task_input,
+                history=[m for m in task_input.history if m["message_id"] in used_ids],
+                source_ids=source_ids,
+                source_states={sid: state for sid, state in task_input.source_states.items()
+                               if sid in set(source_ids.values())},
+            )
             execution = {
                 "input": asdict(task_input),
                 "slices": slices,
                 "next_slice": 0,
                 "model_calls": 0,
                 "changed": False,
-                "diagnostics": [],
+                "diagnostics": [
+                    {**gap, "target_message_id": message["message_id"],
+                     "action_taken": "reported_to_extractor"}
+                    for message in task_input.targets for gap in message.get("context_gaps", [])
+                ],
+                "processing_results": [
+                    {"message_id": source.message_id, "outcome": "already_processed"}
+                    for association, source in session.execute(
+                        select(MemoryTaskSource, SourceRecord)
+                        .join(SourceRecord, SourceRecord.id == MemoryTaskSource.source_id)
+                        .where(MemoryTaskSource.task_id == task.id,
+                               MemoryTaskSource.kind == "target",
+                               MemoryTaskSource.status == "skipped")
+                    )
+                ],
                 "budget": asdict(budget),
                 "prompt_version": PROMPT_VERSION,
             }
@@ -1055,30 +1246,49 @@ def _process_task(
         current = execution["slices"][index]
         slice_input = replace(task_input, targets=current["targets"], history=current["history"])
         prepared = execution.get("prepared_slice")
-        if prepared and prepared["index"] == index:
+        assessments = []
+        if current.get("context_error"):
+            facts = []
+            assessments = [ExtractionAssessment(
+                message_id=m["message_id"], outcome="context_insufficient",
+                reason=current["context_error"],
+            ) for m in current["targets"]]
+        elif prepared and prepared["index"] == index:
             facts = [ExtractedFact.model_validate(value) for value in prepared["facts"]]
+            assessments = [ExtractionAssessment.model_validate(value)
+                           for value in prepared.get("assessments", [])]
         else:
             consume_call()
             try:
-                facts = fact_model.extract(targets=slice_input.targets, history=slice_input.history)
+                extract_with_outcomes = getattr(fact_model, "extract_with_outcomes", None)
+                if extract_with_outcomes is not None:
+                    output = extract_with_outcomes(
+                        targets=slice_input.targets, history=slice_input.history)
+                    facts, assessments = output.facts, output.assessments
+                else:
+                    facts = fact_model.extract(
+                        targets=slice_input.targets, history=slice_input.history)
             except OutputLimitError as exc:
                 try:
                     children = split_slice(current)
                 except ValueError:
                     raise ProviderError("output truncation recovery exhausted") from exc
-                # Retain the frozen input and trim history again after splitting.
+                # Re-select from the frozen input, retaining required dependencies.
                 for child in children:
-                    while (
-                        input_size(
-                            EXTRACTION_PROMPT,
-                            {
-                                "targets": child["targets"],
-                                "history": child["history"],
-                            },
-                        )
-                        > budget.input_tokens - budget.output_tokens
-                    ):
-                        child["history"] = child["history"][1:]
+                    for message in child["history"]:
+                        if message["message_id"] in {m["message_id"] for m in child["targets"]}:
+                            message = dict(message)
+                            message["continuation"] = True
+                            child["history"] = [message if m["message_id"] == message["message_id"]
+                                                else m for m in child["history"]]
+                    selected = select_history(
+                        child["targets"], child["history"], system=EXTRACTION_PROMPT,
+                        limit=budget.input_tokens - budget.output_tokens,
+                    )
+                    if selected is None:
+                        child.update(history=[], context_error="CONTEXT_BUDGET_EXCEEDED")
+                    else:
+                        child["history"] = selected
                 with session_factory.begin() as session:
                     task = _leased_task(session, **ownership)
                     execution["slices"] = [
@@ -1097,7 +1307,7 @@ def _process_task(
                     ]
                     _save_execution(task, execution)
                 continue
-            validate_fact_evidence(facts, slice_input.targets)
+            validate_fact_evidence(facts, slice_input.targets, slice_input.history)
             facts = [
                 normalize_fact_scenes(
                     session_factory,
@@ -1115,12 +1325,17 @@ def _process_task(
                 execution["prepared_slice"] = {
                     "index": index,
                     "facts": [fact.model_dump(mode="json") for fact in facts],
+                    "assessments": [a.model_dump() for a in assessments],
                 }
                 _save_execution(task, execution)
         accepted = []
         skipped = []
         for fact in facts:
             reason = candidate_skip_reason(fact)
+            if any(m.get("timestamp_origin") == "adapter_observed"
+                   for m in slice_input.targets if m["message_id"] in fact.message_ids):
+                if fact.change_kind != "none":
+                    reason = "UNKNOWN_EVENT_TIME"
             if reason:
                 skipped.append(
                     {
@@ -1152,13 +1367,18 @@ def _process_task(
             _validate_input(session, task, task_input, committed_changes=execution["changed"])
             if task.payload["execution"]["next_slice"] != index:
                 raise LeaseLostError("slice progress changed")
-            results = _commit_results(
+            results, changed, unchanged = _commit_results(
                 session, task=task, task_input=slice_input, decisions=decisions, embedder=embedder
             )
             execution["next_slice"] = index + 1
             execution.pop("prepared_slice", None)
-            execution["changed"] = execution["changed"] or bool(decisions)
+            execution["changed"] = execution["changed"] or changed
             execution["diagnostics"] = [*execution["diagnostics"], *skipped]
+            processing_results = _slice_processing_results(
+                session, slice_input, decisions, assessments, skipped, unchanged)
+            execution["processing_results"] = [
+                *execution.get("processing_results", []), *processing_results,
+            ]
             _save_execution(task, execution)
             task.result_json = [
                 result
@@ -1173,7 +1393,13 @@ def _process_task(
             for message in current["targets"]:
                 if message["message_id"] not in remaining:
                     source = session.get(SourceRecord, task_input.source_ids[message["message_id"]])
-                    source.processed_version = source.version
+                    incomplete = any(
+                        result["message_id"] == message["message_id"] and result["outcome"] in
+                        {"context_insufficient", "time_unresolved", "evaluated_no_fact"}
+                        for result in execution["processing_results"]
+                    )
+                    if not incomplete:
+                        source.processed_version = source.version
                     association = session.get(MemoryTaskSource, (tenant_id, task_id, source.id))
                     association.status = "processed"
             # Fence every slice, including non-terminal commits, against expired leases.
@@ -1240,7 +1466,8 @@ def run_once(
     duplicate_threshold: float,
     budget: ExtractionBudget = ExtractionBudget(),
 ) -> bool:
-    with session_factory() as session:
+    with session_factory.begin() as session:
+        finish_exhausted_leases(session)
         tenant_ids = session.scalars(
             select(MemoryTask.tenant_id)
             .where(

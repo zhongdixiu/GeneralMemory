@@ -42,9 +42,9 @@ def test_qwen_accepts_user_confirmation_with_assistant_context(monkeypatch):
     ) == [ExtractedFact(memory="用户喜欢简洁回复。", message_ids=["assistant", "user"])]
 
 
-def test_qwen_rejects_history_as_fact_evidence(monkeypatch):
+def test_qwen_rejects_history_without_target_user_anchor(monkeypatch):
     model = _model(monkeypatch, [{"memory": "用户喜欢简洁回复。", "message_ids": ["history"]}])
-    with pytest.raises(ProviderError, match="non-target"):
+    with pytest.raises(ProviderError, match="target user"):
         model.extract(
             targets=[{"message_id": "target", "role": "user"}],
             history=[{"message_id": "history", "role": "user"}],
@@ -179,3 +179,39 @@ def test_applicability_rejects_unknown_ids(monkeypatch):
     monkeypatch.setattr(model, "_json_completion", lambda *args: {"memory_ids": ["unknown"]})
     with pytest.raises(ProviderError, match="unknown memory"):
         model.select_applicable(query="项目总结", business_domain="email", candidates=[])
+
+
+def test_qwen_accepts_history_evidence_with_target_user_anchor(monkeypatch):
+    model = _model(monkeypatch, [{"memory": "用户要求周报采用三段式。",
+                                 "message_ids": ["proposal", "confirm"]}])
+    facts = model.extract(targets=[{"message_id": "confirm", "role": "user"}],
+                          history=[{"message_id": "proposal", "role": "assistant"}])
+    assert facts[0].message_ids == ["proposal", "confirm"]
+
+
+def test_qwen_rejects_missing_and_inconsistent_assessments(monkeypatch):
+    model = _model(monkeypatch, [{"memory": "用户喜欢简洁回复。", "message_ids": ["user"]}])
+    fact = ExtractedFact(memory="用户喜欢简洁回复。", message_ids=["user"]).model_dump(mode="json")
+    for assessments in ([], [{"message_id": "user", "outcome": "no_durable_value",
+                             "reason": "没有保存价值"}]):
+        monkeypatch.setattr(model, "_json_completion", lambda *args, a=assessments: {
+            "facts": [fact], "assessments": a})
+        with pytest.raises(ProviderError):
+            model.extract_with_outcomes(targets=[{"message_id": "user", "role": "user"}],
+                                        history=[])
+
+
+def test_observation_timestamp_is_hidden_from_extraction_model(monkeypatch):
+    model = _model(monkeypatch, [])
+
+    def completion(prompt, payload):
+        assert payload["targets"][0]["occurred_at"] is None
+        assert payload["targets"][0]["timestamp_origin"] == "adapter_observed"
+        return {"facts": [], "assessments": [{"message_id": "observed",
+                "outcome": "context_insufficient", "reason": "原始时间未知"}]}
+
+    monkeypatch.setattr(model, "_json_completion", completion)
+    target = {"message_id": "observed", "role": "user", "content": "本周负责审核。",
+              "occurred_at": "2026-10-12T09:00:00+08:00", "timestamp_origin": "adapter_observed"}
+    model.extract_with_outcomes(targets=[target], history=[])
+    assert target["occurred_at"] == "2026-10-12T09:00:00+08:00"
