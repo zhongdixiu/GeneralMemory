@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
+from contextlib import nullcontext
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
@@ -135,7 +136,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def search_user_memories(
         body: SearchRequest, auth: AuthContext = Depends(read_user_memory),
     ) -> SearchResponse:
-        if not resolved_settings.dashscope_api_key or not resolved_settings.siliconflow_api_key:
+        if not resolved_settings.siliconflow_api_key or (
+            body.use_model and not resolved_settings.dashscope_api_key
+        ):
             raise ApiError(503, "SEARCH_UNAVAILABLE", "search providers are not configured")
         try:
             embedder = SiliconFlowEmbedder(
@@ -144,14 +147,19 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 model_id=resolved_settings.siliconflow_embedding_model,
             )
             with embedder._client:
-                model = QwenFactModel(
-                    api_key=resolved_settings.dashscope_api_key,
-                    base_url=resolved_settings.dashscope_base_url,
-                    model=resolved_settings.dashscope_model,
-                    input_tokens=resolved_settings.extraction_budget.input_tokens,
-                    output_tokens=resolved_settings.extraction_budget.output_tokens,
-                )
-                with model._client, session_factory.begin() as session:
+                model = None
+                if body.use_model:
+                    model = QwenFactModel(
+                        api_key=resolved_settings.dashscope_api_key,
+                        base_url=resolved_settings.dashscope_base_url,
+                        model=resolved_settings.dashscope_model,
+                        input_tokens=resolved_settings.extraction_budget.input_tokens,
+                        output_tokens=resolved_settings.extraction_budget.output_tokens,
+                    )
+                with (
+                    model._client if model is not None else nullcontext(),
+                    session_factory.begin() as session,
+                ):
                     memories = search_task_memories(
                         session, tenant_id=auth.tenant_id, user_id=body.user_id, query=body.query,
                         authorized_agent_ids=[], company_ids=[], limit=body.limit,

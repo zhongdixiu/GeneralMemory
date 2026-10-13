@@ -19,6 +19,7 @@ from memory_cmic.models import (
 )
 from memory_cmic.providers import (
     TASK_APPLICABILITY_PROMPT,
+    TASK_SELECTION_PROMPT,
     ApplicabilityModel,
     Embedder,
     ProviderError,
@@ -258,7 +259,7 @@ def search_task_memories(
     authorized_agent_ids: list[str],
     company_ids: list[str],
     embedder: Embedder,
-    applicability_model: object,
+    applicability_model: object | None = None,
     project_id: str | None = None,
     limit: int = 10,
     now: datetime | None = None,
@@ -270,7 +271,7 @@ def search_task_memories(
     """Search a task without caller supplied business labels."""
     if not query.strip() or limit <= 0:
         raise ValueError("query must be nonempty and limit positive")
-    if not hasattr(applicability_model, "select_for_query"):
+    if applicability_model is not None and not hasattr(applicability_model, "select_for_query"):
         raise ValueError("applicability_model must support task queries")
     source_filtered = agent_id is not None or source_system is not None
     validate_user_evidence = validate_user_evidence or source_filtered
@@ -278,16 +279,21 @@ def search_task_memories(
         session, tenant_id=tenant_id, user_id=user_id,
         agent_id=agent_id, source_system=source_system,
     ) if source_filtered else None
-    query_vector = embedder.embed([query])[0]
-    scenes = session.scalars(
-        select(BusinessScene).where(BusinessScene.tenant_id == tenant_id)
+    if source_filtered and not allowed_source_ids:
+        return []
+    stale = session.scalars(
+        select(BusinessScene).where(
+            BusinessScene.tenant_id == tenant_id,
+            or_(
+                BusinessScene.embedding.is_(None),
+                BusinessScene.model_id.is_distinct_from(embedder.model_id),
+            ),
+        )
     ).all()
-    stale = [
-        scene for scene in scenes if scene.embedding is None or scene.model_id != embedder.model_id
-    ]
+    vectors = embedder.embed([query, *[scene.definition for scene in stale]])
+    query_vector = vectors[0]
     if stale:
-        vectors = embedder.embed([scene.definition for scene in stale])
-        for scene, vector in zip(stale, vectors, strict=True):
+        for scene, vector in zip(stale, vectors[1:], strict=True):
             scene.embedding = vector
             scene.model_id = embedder.model_id
         session.flush()
@@ -321,7 +327,7 @@ def search_task_memories(
         check_time = now or datetime.now(UTC)
         memories = session.scalars(select(MemoryItem).where(
             *base, MemoryItem.subject_id == user_id,
-        )).all() if allowed_source_ids else []
+        )).all()
         matching_ids = [memory.id for memory in memories if memory_has_valid_evidence(
             session, memory, tenant_id=tenant_id, user_id=user_id, now=check_time,
             checked=checked, allowed_source_ids=allowed_source_ids,
@@ -369,42 +375,15 @@ def search_task_memories(
             session, row[0], tenant_id=tenant_id, user_id=user_id, now=check_time,
             checked=checked, allowed_source_ids=allowed_source_ids,
         )]
-    # Both channels retain their nearest candidates before the shared judgement.
-    payload = [
-        {
-            "id": memory.id,
-            "memory": memory.content,
-            "business_domains": memory.business_domains,
-            "project_context": (memory.metadata_json or {}).get("project_context"),
-            "source_positions": positions,
-        }
-        for memory, _, positions in ordered
-    ]
-    input_limit = getattr(applicability_model, "input_limit", 9952)
-    if input_size(TASK_APPLICABILITY_PROMPT, {"query": query, "candidates": payload}) > input_limit:
-        raise ProviderError("task candidates exceed applicability input budget")
     snapshots = {
         memory.id: (memory.version, memory.summary, memory.content) for memory, _, _ in ordered
     } if validate_user_evidence else {}
-    decisions = (
-        applicability_model.select_for_query(query=query, candidates=payload) if payload else []
-    )
-    by_id = {memory.id: memory for memory, _, _ in ordered}
-    if {item.get("id") for item in decisions} != set(by_id):
-        raise ProviderError("task applicability output cites unknown or missing memory IDs")
-    if trace is not None:
-        trace.extend(
-            {
-                "id": item["id"],
-                "sources": sorted(ranked[item["id"]][2]),
-                "source_positions": ranked[item["id"]][2],
-                "include": item["include"],
-                "reason": item["reason"],
-            }
-            for item in decisions
+    selected = [memory for memory, _, _ in ordered]
+    if applicability_model is not None and ordered:
+        selected = _select_task_candidates(
+            applicability_model, query=query, ordered=ordered, ranked=ranked, trace=trace,
         )
-    selected = [by_id[item["id"]] for item in decisions if item["include"]]
-    if validate_user_evidence:
+    if validate_user_evidence and selected:
         selected_ids = [memory.id for memory in selected]
         session.expire_all()
         if source_filtered:
@@ -426,5 +405,54 @@ def search_task_memories(
                     allowed_source_ids=allowed_source_ids,
                 ):
                     current.append(memory)
+                    if len(current) == limit:
+                        break
         selected = current
     return selected[:limit]
+
+
+def _select_task_candidates(
+    applicability_model: object,
+    *,
+    query: str,
+    ordered: list[tuple[MemoryItem, float, dict[str, int]]],
+    ranked: dict[str, tuple[MemoryItem, float, dict[str, int]]],
+    trace: list[dict] | None,
+) -> list[MemoryItem]:
+    # Keep both candidate channels; only omit model explanations when no trace is requested.
+    payload = [
+        {
+            "id": memory.id,
+            "memory": memory.content,
+            "business_domains": memory.business_domains,
+            "project_context": (memory.metadata_json or {}).get("project_context"),
+            "source_positions": positions,
+        }
+        for memory, _, positions in ordered
+    ]
+    input_limit = getattr(applicability_model, "input_limit", 9952)
+    compact = trace is None and hasattr(applicability_model, "select_for_query_ids")
+    prompt = TASK_SELECTION_PROMPT if compact else TASK_APPLICABILITY_PROMPT
+    if input_size(prompt, {"query": query, "candidates": payload}) > input_limit:
+        raise ProviderError("task candidates exceed applicability input budget")
+    by_id = {memory.id: memory for memory, _, _ in ordered}
+    if compact:
+        ids = applicability_model.select_for_query_ids(query=query, candidates=payload)
+        if not set(ids).issubset(by_id) or len(ids) != len(set(ids)):
+            raise ProviderError("task applicability output cites unknown or duplicate memory IDs")
+        return [by_id[memory_id] for memory_id in ids]
+    decisions = applicability_model.select_for_query(query=query, candidates=payload)
+    if {item.get("id") for item in decisions} != set(by_id):
+        raise ProviderError("task applicability output cites unknown or missing memory IDs")
+    if trace is not None:
+        trace.extend(
+            {
+                "id": item["id"],
+                "sources": sorted(ranked[item["id"]][2]),
+                "source_positions": ranked[item["id"]][2],
+                "include": item["include"],
+                "reason": item["reason"],
+            }
+            for item in decisions
+        )
+    return [by_id[item["id"]] for item in decisions if item["include"]]

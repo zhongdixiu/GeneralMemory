@@ -3,7 +3,14 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from memory_cmic.providers import ExtractedFact, OutputLimitError, ProviderError, QwenFactModel
+from memory_cmic.providers import (
+    TASK_APPLICABILITY_RULES,
+    TASK_SELECTION_PROMPT,
+    ExtractedFact,
+    OutputLimitError,
+    ProviderError,
+    QwenFactModel,
+)
 
 
 def _model(monkeypatch, facts, *, complete=True):
@@ -241,6 +248,36 @@ def test_applicability_receives_beijing_clock(monkeypatch):
         return {"decisions": []}
     monkeypatch.setattr(model, "_json_completion", completion)
     assert model.select_for_query(query="今天的安排", candidates=[]) == []
+
+
+def test_compact_task_selection_preserves_conditions_and_model_order(monkeypatch):
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    candidates = [{"id": "first", "memory": "一般条件"},
+                  {"id": "second", "memory": "更具体的条件"}]
+
+    def completion(prompt, payload):
+        assert prompt == TASK_SELECTION_PROMPT
+        assert prompt.startswith(TASK_APPLICABILITY_RULES)
+        assert payload["candidates"] == candidates
+        assert payload["current_time"].endswith("+08:00")
+        return {"memory_ids": ["second", "first"]}
+
+    monkeypatch.setattr(model, "_json_completion", completion)
+    assert model.select_for_query_ids(query="今天的安排", candidates=candidates) == [
+        "second", "first",
+    ]
+
+
+@pytest.mark.parametrize("raw", [
+    {"memory_ids": ["unknown"]}, {"memory_ids": ["first", "first"]},
+    {"memory_ids": "first"}, {"memory_ids": [1]}, {"decisions": []},
+    {"memory_ids": [], "reason": "unwanted extra output"},
+])
+def test_compact_task_selection_rejects_invalid_output(monkeypatch, raw):
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    monkeypatch.setattr(model, "_json_completion", lambda *args: raw)
+    with pytest.raises(ProviderError):
+        model.select_for_query_ids(query="撰写周报", candidates=[{"id": "first"}])
 
 
 def test_unknown_targets_never_expose_receipt_as_a_date_anchor(monkeypatch):

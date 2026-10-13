@@ -13,6 +13,7 @@ from test_add_api import _settings
 from test_consolidation import seed_fact
 
 import memory_cmic.api as api_module
+import memory_cmic.retrieval as retrieval_module
 from memory_cmic.auth import StaticCredentialStore
 from memory_cmic.deterministic_embedding import deterministic_embedding
 from memory_cmic.models import (
@@ -49,6 +50,10 @@ class FakeSelector:
         if self.before_return is not None:
             self.before_return()
         return [{"id": item["id"], "include": True, "reason": "relevant"} for item in candidates]
+
+    def select_for_query_ids(self, *, query, candidates):
+        return [item["id"] for item in self.select_for_query(query=query, candidates=candidates)
+                if item["include"]]
 
 
 @pytest.fixture
@@ -180,7 +185,8 @@ def _source(session, memory):
     return session.get(SourceRecord, edge.upstream_source_id)
 
 
-def test_search_shares_fact_and_inference_across_agents(read_api, session):
+@pytest.mark.parametrize("use_model", [False, True])
+def test_search_shares_fact_and_inference_across_agents(read_api, session, use_model):
     client, selector, tenant, _ = read_api
     first = _fact(session, tenant, "用户要求周报先列结论", agent="agent_a")
     second = _fact(session, tenant, "用户要求复盘先列结论", agent="agent_b", domains=["report"])
@@ -195,7 +201,7 @@ def test_search_shares_fact_and_inference_across_agents(read_api, session):
 
     responses = [client.post(
         "/api/v1/memories:search", headers=_headers(token),
-        json={"user_id": "user_1", "query": "撰写周报和复盘"},
+        json={"user_id": "user_1", "query": "撰写周报和复盘", "use_model": use_model},
     ) for token in ("agent-a", "agent-b")]
     assert all(response.status_code == 200 for response in responses)
     assert responses[0].json() == responses[1].json()
@@ -203,15 +209,149 @@ def test_search_shares_fact_and_inference_across_agents(read_api, session):
     assert {row["id"] for row in results} == {first.id, second.id, inference.id}
     assert {row["cognitive_type"] for row in results} == {"fact", "inference"}
     assert all(set(row) == {"id", "memory", "cognitive_type"} for row in results)
-    assert {row["id"] for row in selector.candidates} == {first.id, second.id, inference.id}
+    if use_model:
+        assert {row["id"] for row in selector.candidates} == {first.id, second.id, inference.id}
+    else:
+        assert selector.candidates == []
     limited = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写周报", "limit": 1},
+        json={"user_id": "user_1", "query": "撰写周报", "limit": 1, "use_model": use_model},
     )
     assert limited.status_code == 200
     assert len(limited.json()["results"]) == 1
 
 
+@pytest.mark.parametrize("options", [{}, {"use_model": False}])
+def test_search_without_model_needs_no_qwen_and_uses_vector_order(
+    read_api, session, monkeypatch, options,
+):
+    _, _, tenant, settings = read_api
+    nearest = _fact(session, tenant, "用户要求周报先列结论")
+    _fact(session, tenant, "用户喜欢户外活动")
+
+    def unexpected_model(**kwargs):
+        pytest.fail("Qwen must not be constructed when model selection is disabled")
+
+    monkeypatch.setattr(api_module, "QwenFactModel", unexpected_model)
+    with TestClient(api_module.create_app(
+        replace(settings, dashscope_api_key=None), engine=session.get_bind(),
+    )) as client:
+        response = client.post(
+            "/api/v1/memories:search", headers=_headers(),
+            json={"user_id": "user_1", "query": f"{nearest.summary}\n{nearest.content}",
+                  "limit": 1, **options},
+        )
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["results"]] == [nearest.id]
+
+
+def test_search_compact_selection_keeps_model_order_and_backfills_invalid_results(
+    read_api, session, monkeypatch,
+):
+    client, selector, tenant, _ = read_api
+    facts = [_fact(session, tenant, content) for content in (
+        "用户要求周报先列结论", "用户要求周报列出风险", "用户要求周报说明进展",
+    )]
+    first_source = _source(session, facts[0])
+    selected_ids = [fact.id for fact in facts]
+    rechecked = []
+    model_returned = False
+    original_check = retrieval_module.memory_has_valid_evidence
+
+    def check(session, memory, **kwargs):
+        if model_returned:
+            rechecked.append(memory.id)
+        return original_check(session, memory, **kwargs)
+
+    def select_ids(**kwargs):
+        nonlocal model_returned
+        assert {item["id"] for item in kwargs["candidates"]} == set(selected_ids)
+        session.execute(update(SourceRecord).where(
+            SourceRecord.id == first_source.id,
+        ).values(status="invalidated"))
+        session.flush()
+        model_returned = True
+        return selected_ids
+
+    def unexpected_verbose_selection(**kwargs):
+        pytest.fail("API search should use compact model output")
+
+    monkeypatch.setattr(selector, "select_for_query_ids", select_ids)
+    monkeypatch.setattr(selector, "select_for_query", unexpected_verbose_selection)
+    monkeypatch.setattr(retrieval_module, "memory_has_valid_evidence", check)
+    response = client.post(
+        "/api/v1/memories:search", headers=_headers(),
+        json={"user_id": "user_1", "query": "撰写周报", "limit": 1, "use_model": True},
+    )
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["results"]] == [selected_ids[1]]
+    assert rechecked == selected_ids[:2]
+
+
+def test_search_compact_selection_can_exclude_every_candidate(read_api, session, monkeypatch):
+    client, selector, tenant, _ = read_api
+    _fact(session, tenant, "用户要求周报先列结论")
+    monkeypatch.setattr(selector, "select_for_query_ids", lambda **kwargs: [])
+    response = client.post(
+        "/api/v1/memories:search", headers=_headers(),
+        json={"user_id": "user_1", "query": "整理云盘", "use_model": True},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"results": []}
+
+
+@pytest.mark.parametrize("use_model, status", [(False, 200), (True, 502)])
+def test_search_model_input_budget_only_applies_when_enabled(read_api, session, use_model, status):
+    client, selector, tenant, _ = read_api
+    fact = _fact(session, tenant, "用户要求周报先列结论")
+    selector.input_limit = 1
+    response = client.post(
+        "/api/v1/memories:search", headers=_headers(),
+        json={"user_id": "user_1", "query": "撰写周报", "use_model": use_model},
+    )
+    assert response.status_code == status
+    if use_model:
+        assert response.json()["error"]["code"] == "SEARCH_FAILED"
+    else:
+        assert [row["id"] for row in response.json()["results"]] == [fact.id]
+    assert selector.candidates == []
+
+
+@pytest.mark.parametrize("use_model", [False, True])
+def test_search_empty_source_filter_skips_embedding(read_api, monkeypatch, use_model):
+    client, _, _, _ = read_api
+
+    def unexpected_embedding(self, texts):
+        pytest.fail("An empty source range must not call embedding")
+
+    monkeypatch.setattr(FakeEmbedder, "embed", unexpected_embedding)
+    response = client.post(
+        "/api/v1/memories:search", headers=_headers(),
+        json={"user_id": "user_1", "query": "撰写报告",
+              "source_system": "missing", "use_model": use_model},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"results": []}
+
+
+@pytest.mark.parametrize("use_model", [False, True])
+def test_search_embedding_failure_is_reported_in_both_modes(read_api, monkeypatch, use_model):
+    client, _, _, _ = read_api
+
+    def fail(self, texts):
+        raise ProviderError("sensitive embedding error")
+
+    monkeypatch.setattr(FakeEmbedder, "embed", fail)
+    response = client.post(
+        "/api/v1/memories:search", headers=_headers(),
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": use_model},
+    )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "SEARCH_FAILED"
+    assert "sensitive" not in response.text
+
+
+@pytest.mark.parametrize("use_model", [False, True])
 @pytest.mark.parametrize("filters, indexes", [
     ({"agent_id": "agent_b"}, {1, 3}),
     ({"source_system": "other"}, {2, 3}),
@@ -219,7 +359,7 @@ def test_search_shares_fact_and_inference_across_agents(read_api, session):
     ({"agent_id": "missing"}, set()),
     ({"source_system": "missing"}, set()),
 ])
-def test_search_filters_before_model_call(read_api, session, filters, indexes):
+def test_search_filters_before_model_call(read_api, session, filters, indexes, use_model):
     client, selector, tenant, _ = read_api
     facts = [
         _fact(session, tenant, "用户要求先列结论", agent=agent, source_system=source)
@@ -234,19 +374,20 @@ def test_search_filters_before_model_call(read_api, session, filters, indexes):
           agent="agent_b", source_system="other")
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告", **filters},
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": use_model, **filters},
     )
     assert response.status_code == 200
     expected = {facts[index].id for index in indexes}
     assert {row["id"] for row in response.json()["results"]} == expected
-    assert {row["id"] for row in selector.candidates} == expected
+    assert {row["id"] for row in selector.candidates} == (expected if use_model else set())
 
 
+@pytest.mark.parametrize("use_model", [False, True])
 @pytest.mark.parametrize("filters", [
     {"agent_id": "agent_b"}, {"source_system": "other"},
     {"agent_id": "agent_b", "source_system": "other"},
 ])
-def test_search_filters_inference_by_complete_basis_group(read_api, session, filters):
+def test_search_filters_inference_by_complete_basis_group(read_api, session, filters, use_model):
     client, selector, tenant, _ = read_api
     first = _fact(session, tenant, "用户要求周报先列结论")
     second = _fact(session, tenant, "用户要求复盘先列结论",
@@ -255,12 +396,12 @@ def test_search_filters_inference_by_complete_basis_group(read_api, session, fil
     matching = _inference(session, tenant, [second])
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告", **filters},
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": use_model, **filters},
     )
     assert response.status_code == 200
     expected = {second.id, matching.id}
     assert {row["id"] for row in response.json()["results"]} == expected
-    assert {row["id"] for row in selector.candidates} == expected
+    assert {row["id"] for row in selector.candidates} == (expected if use_model else set())
 
 
 def test_search_uses_evidence_instead_of_creator_for_agent_filter(read_api, session):
@@ -284,8 +425,11 @@ def test_search_uses_evidence_instead_of_creator_for_agent_filter(read_api, sess
     assert {row["id"] for row in response.json()["results"]} == {fact.id, other.id, inference.id}
 
 
+@pytest.mark.parametrize("use_model", [False, True])
 @pytest.mark.parametrize("independent_group", [False, True])
-def test_search_requires_whole_source_group_to_match(read_api, session, independent_group):
+def test_search_requires_whole_source_group_to_match(
+    read_api, session, independent_group, use_model,
+):
     client, _, tenant, _ = read_api
     fact = _fact(session, tenant, "用户要求周报先列结论")
     other = _fact(session, tenant, "用户要求复盘先列结论", agent="agent_b")
@@ -312,7 +456,8 @@ def test_search_requires_whole_source_group_to_match(read_api, session, independ
     inference = _inference(session, tenant, [fact])
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告", "agent_id": "agent_a"},
+        json={"user_id": "user_1", "query": "撰写报告", "agent_id": "agent_a",
+              "use_model": use_model},
     )
     assert response.status_code == 200
     expected = {fact.id, inference.id} if independent_group else set()
@@ -415,8 +560,9 @@ def test_search_combined_filters_require_same_complete_source_group(read_api, se
     assert response.json() == {"results": []}
 
 
+@pytest.mark.parametrize("use_model", [False, True])
 @pytest.mark.parametrize("filters", [{"agent_id": "agent_b"}, {"source_system": "other"}])
-def test_search_filters_before_candidate_window(read_api, session, filters):
+def test_search_filters_before_candidate_window(read_api, session, filters, use_model):
     client, selector, tenant, _ = read_api
     query = "用户要求先列结论"
     for _ in range(35):
@@ -425,11 +571,12 @@ def test_search_filters_before_candidate_window(read_api, session, filters):
                      agent="agent_b", source_system="other")
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": query, "limit": 1, **filters},
+        json={"user_id": "user_1", "query": query, "limit": 1,
+              "use_model": use_model, **filters},
     )
     assert response.status_code == 200
     assert {row["id"] for row in response.json()["results"]} == {matching.id}
-    assert {row["id"] for row in selector.candidates} == {matching.id}
+    assert {row["id"] for row in selector.candidates} == ({matching.id} if use_model else set())
 
 
 @pytest.mark.parametrize("change", ["source_system", "agent", "kind"])
@@ -458,16 +605,17 @@ def test_search_rechecks_source_filters_after_model_call(read_api, session, chan
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
         json={"user_id": "user_1", "query": "撰写报告",
-              "agent_id": "agent_a", "source_system": "test"},
+              "agent_id": "agent_a", "source_system": "test", "use_model": True},
     )
     assert response.status_code == 200
     assert response.json() == {"results": []}
 
 
+@pytest.mark.parametrize("use_model", [False, True])
 @pytest.mark.parametrize("change", [
     "expired", "future", "disputed", "invalidated", "source_invalidated", "source_version",
 ])
-def test_search_excludes_unusable_facts_and_their_inferences(read_api, session, change):
+def test_search_excludes_unusable_facts_and_their_inferences(read_api, session, change, use_model):
     client, selector, tenant, _ = read_api
     fact = _fact(session, tenant, "用户要求先列结论")
     _inference(session, tenant, [fact])
@@ -484,7 +632,7 @@ def test_search_excludes_unusable_facts_and_their_inferences(read_api, session, 
     session.flush()
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告"},
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": use_model},
     )
     assert response.status_code == 200
     assert response.json() == {"results": []}
@@ -551,7 +699,7 @@ def test_search_rechecks_after_model_call(read_api, session, change):
     selector.before_return = mutate
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告"},
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": True},
     )
     assert response.status_code == 200
     assert response.json() == {"results": []}
@@ -622,6 +770,7 @@ def test_read_endpoints_require_credentials_and_return_empty_for_missing_user(re
 @pytest.mark.parametrize("overrides", [
     {"query": " "}, {"query": "x" * 8001}, {"limit": 0}, {"limit": 51},
     {"user_id": ""}, {"user_id": None}, {"tenant_id": "other"}, {"session_id": "session"},
+    *[{"use_model": value} for value in (None, "true", "false", 0, 1)],
     *[{field: value} for field, maximum in (("agent_id", 128), ("source_system", 64))
       for value in ("", " ", None, "x" * (maximum + 1))],
 ])
@@ -644,7 +793,7 @@ def test_search_provider_failure_is_not_an_empty_result(read_api, session, monke
     monkeypatch.setattr(selector, "select_for_query", fail)
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告"},
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": True},
     )
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "SEARCH_FAILED"
@@ -654,7 +803,7 @@ def test_search_provider_failure_is_not_an_empty_result(read_api, session, monke
     )) as unconfigured:
         response = unconfigured.post(
             "/api/v1/memories:search", headers=_headers(),
-            json={"user_id": "user_1", "query": "撰写报告"},
+            json={"user_id": "user_1", "query": "撰写报告", "use_model": True},
         )
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "SEARCH_UNAVAILABLE"
@@ -671,7 +820,7 @@ def test_search_rejects_model_output_outside_candidates(read_api, session, monke
     ])
     response = client.post(
         "/api/v1/memories:search", headers=_headers(),
-        json={"user_id": "user_1", "query": "撰写报告"},
+        json={"user_id": "user_1", "query": "撰写报告", "use_model": True},
     )
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "SEARCH_FAILED"

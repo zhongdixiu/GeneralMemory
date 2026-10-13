@@ -215,6 +215,58 @@ def test_task_search_has_two_candidate_channels_and_project_filter(session):
         )
 
 
+def test_task_search_batches_query_and_stale_scene_embeddings(session):
+    tenant = f"tenant_scene_batch_{uuid4().hex}"
+    for name in ("email", "disk"):
+        session.add(BusinessScene(
+            tenant_id=tenant, name=name, definition=name, aliases=[],
+        ))
+    session.add(BusinessScene(
+        tenant_id=tenant, name="ready", definition="已就绪的场景", aliases=[],
+        embedding=DeterministicEmbedder().embed(["已就绪的场景"])[0],
+        model_id=DeterministicEmbedder.model_id,
+    ))
+    session.flush()
+
+    class RecordingEmbedder(DeterministicEmbedder):
+        def __init__(self):
+            self.calls = []
+
+        def embed(self, texts):
+            self.calls.append(texts)
+            return super().embed(texts)
+
+    embedder = RecordingEmbedder()
+    assert search_task_memories(
+        session, tenant_id=tenant, user_id="user", query="撰写邮件",
+        authorized_agent_ids=[], company_ids=[], embedder=embedder,
+    ) == []
+    assert len(embedder.calls) == 1
+    assert embedder.calls[0][0] == "撰写邮件"
+    assert set(embedder.calls[0][1:]) == {"email", "disk"}
+    scenes = session.scalars(select(BusinessScene).where(BusinessScene.tenant_id == tenant)).all()
+    assert all(
+        scene.embedding is not None and scene.model_id == embedder.model_id for scene in scenes
+    )
+
+
+def test_task_search_trace_keeps_model_reasons(session):
+    generated = datetime(2026, 9, 21, 8, tzinfo=UTC)
+    prepare_smoke_data(session, memory_count=60, generated_at=generated)
+
+    class TracedSelector(IncludeAll):
+        def select_for_query_ids(self, **kwargs):
+            pytest.fail("A traced search must keep full model decisions")
+
+    trace = []
+    assert search_task_memories(
+        session, tenant_id=SMOKE_TENANT_ID, user_id="user_wp5", query="整理云盘文件",
+        authorized_agent_ids=[], company_ids=[], embedder=DeterministicEmbedder(),
+        applicability_model=TracedSelector(), trace=trace, now=generated,
+    )
+    assert trace and all(item["reason"] == "relevant" for item in trace)
+
+
 def test_reviewed_migration_is_idempotent_and_audited(session):
     tenant = f"tenant_migrate_{uuid4().hex}"
     memory = MemoryItem(

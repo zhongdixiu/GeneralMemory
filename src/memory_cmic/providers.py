@@ -186,7 +186,7 @@ SCENE_PROMPT = (
     "with one decision for every input label. Existing names require definition=null."
 )
 
-TASK_APPLICABILITY_PROMPT = (
+TASK_APPLICABILITY_RULES = (
     "Judge every candidate memory against the task query. Check task relevance, business "
     "applicability, project conditions, customer/recipient conditions and other conditions "
     "in the full memory text. Include relevant memories when conditions are unknown, preserving "
@@ -196,9 +196,18 @@ TASK_APPLICABILITY_PROMPT = (
     "Check temporal conditions against supplied current_time (Beijing), independently of "
     "memory TTL. Past plans never imply execution or an upcoming event; keep past experiences "
     "for historical queries without treating them as current state. "
+)
+
+TASK_APPLICABILITY_PROMPT = TASK_APPLICABILITY_RULES + (
     "Return JSON {decisions:[{id:string,include:boolean,reason:string}]} with exactly one "
     "decision per supplied candidate. Order included decisions by task relevance and applicable "
     "specificity. Use only supplied IDs."
+)
+
+TASK_SELECTION_PROMPT = TASK_APPLICABILITY_RULES + (
+    "Return JSON {memory_ids:[string]} containing only included candidate IDs, ordered by "
+    "task relevance and applicable specificity. Use only supplied IDs, each at most once. "
+    "Do not output reasons or excluded candidates."
 )
 
 
@@ -523,6 +532,24 @@ class QwenFactModel:
         ):
             raise ProviderError("invalid task applicability decision")
         return decisions
+
+    def select_for_query_ids(
+        self, *, query: str, candidates: list[dict[str, Any]]
+    ) -> list[str]:
+        try:
+            output = ApplicabilityOutput.model_validate(self._json_completion(
+                TASK_SELECTION_PROMPT,
+                {"query": query, "candidates": candidates,
+                 "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()},
+            ))
+        except ValidationError as exc:
+            raise ProviderError(f"invalid task applicability output: {exc}") from exc
+        ids = output.memory_ids
+        if not set(ids).issubset({candidate["id"] for candidate in candidates}):
+            raise ProviderError("task applicability output cites an unknown memory ID")
+        if len(ids) != len(set(ids)):
+            raise ProviderError("task applicability output cites duplicate memory IDs")
+        return ids
 
     def resolve(
         self,

@@ -214,6 +214,7 @@ class SearchRequest(StrictRequestModel):
     user_id: str = Field(min_length=1, max_length=128)
     query: str = Field(min_length=1, max_length=8000)
     limit: int = Field(default=10, ge=1, le=50)
+    use_model: bool = Field(default=False, strict=True)
     agent_id: str | None = Field(default=None, min_length=1, max_length=128)
     source_system: str | None = Field(default=None, min_length=1, max_length=64)
 
