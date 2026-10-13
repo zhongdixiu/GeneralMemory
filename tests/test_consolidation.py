@@ -679,3 +679,45 @@ def test_revert_rejects_new_fact_even_if_its_created_at_is_old(context):
                 reason="复核旧合并",
                 model_id="test-model",
             )
+
+
+def test_inference_statement_order_uses_basis_declarations_instead_of_receipt(context):
+    from memory_cmic.consolidation import _source_follows_memory
+
+    factory, tenant = context
+    with factory.begin() as session:
+        first = seed_fact(session, tenant, "周报写清楚结论")
+        second = seed_fact(session, tenant, "复盘写清楚结论")
+        first.metadata_json = {"time_semantics_version": 3,
+                               "source_occurred_at": "2020-01-01T00:00:00+00:00"}
+        second.metadata_json = {"time_semantics_version": 3,
+                                "source_occurred_at": "2021-01-01T00:00:00+00:00"}
+        ids = [first.id, second.id]
+        backfill_user(session, tenant, "user_1")
+        create_run(session, tenant_id=tenant, user_id="user_1", operator_id="admin")
+    model = FakeModel({"inferences": [{"content": "用户写报告倾向先说明结论",
+        "source_ids": ids, "confidence": 0.8, "reason": "两次独立要求",
+        "business_domains": ["report"]}]})
+    assert run_once(factory, worker_id="basis_statement_time", model=model, model_id="test-model")
+    with factory() as session:
+        inference = session.scalars(select(MemoryItem).where(
+            MemoryItem.tenant_id == tenant, MemoryItem.cognitive_type == "inference")).one()
+        assert inference.metadata_json["source_occurred_at"] == "2021-01-01T00:00:00+00:00"
+        correction = SourceRecord(occurred_at=datetime(2022, 1, 1, tzinfo=UTC), metadata_json={})
+        assert correction.occurred_at < inference.effective_at
+        assert _source_follows_memory(correction, inference)
+
+
+def test_content_history_and_default_ttl_do_not_define_event_interval():
+    from memory_cmic.consolidation import _same_interval
+
+    left = MemoryItem(effective_at=datetime(2026, 10, 13, tzinfo=UTC),
+                      expired_at=datetime(2027, 4, 11, tzinfo=UTC), metadata_json={
+                          "time_semantics_version": 3, "temporal_kind": "historical",
+                          "retention_kind": "regular", "explicit_expired_at": None})
+    right = MemoryItem(effective_at=datetime(2026, 10, 14, tzinfo=UTC),
+                       expired_at=datetime(2027, 4, 12, tzinfo=UTC),
+                       metadata_json=dict(left.metadata_json))
+    assert _same_interval(left, right)
+    right.metadata_json = {**right.metadata_json, "temporal_kind": "current"}
+    assert not _same_interval(left, right)

@@ -126,7 +126,7 @@ def test_new_statement_only_adds_evidence_without_renewing_ttl(
         )).all()) == 2
 
 
-def test_explicit_deadline_and_delayed_expired_fact(worker_context, engine):
+def test_explicit_retention_deadline_and_delayed_fact_starts_at_receipt(worker_context, engine):
     client, tenant_id = worker_context
     deadline = datetime.now(UTC) + timedelta(days=365)
     _add(client, key="explicit", message_id="explicit", content="这个要求有效至指定日期。")
@@ -140,12 +140,12 @@ def test_explicit_deadline_and_delayed_expired_fact(worker_context, engine):
         explicit, delayed = _memories(session, tenant_id)
         assert explicit.expired_at == deadline
         assert explicit.metadata_json["explicit_expired_at"] == deadline.isoformat()
-        assert delayed.status == "expired"
-        assert session.get(MemoryTask, task_id).result_json == []
-        assert session.scalar(select(MemoryEmbedding).where(
-            MemoryEmbedding.tenant_id == tenant_id,
-            MemoryEmbedding.memory_id == delayed.id,
-        )) is None
+        assert delayed.status == "active"
+        source = session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant_id, SourceRecord.message_id == "delayed")).one()
+        assert delayed.effective_at == source.received_at
+        assert delayed.expired_at == source.received_at + timedelta(days=30)
+        assert session.get(MemoryTask, task_id).result_json[0]["id"] == delayed.id
 
 
 @pytest.mark.parametrize("second_scope", [["disk"], ["communication"], None])
@@ -190,7 +190,9 @@ def test_worker_saves_facts_without_scope_known_and_preserves_conditions(
         "expired_at": None,
     }
     model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
-    monkeypatch.setattr(model, "_json_completion", lambda *args: {"facts": [fact]})
+    monkeypatch.setattr(model, "_json_completion", lambda *args: {
+        "facts": [fact], "assessments": [{"message_id": "conditions",
+                                         "outcome": "evaluated", "reason": "有明确依据"}]})
     _run(engine, model)
     response = client.get(
         f"/api/v1/tasks/{task_id}", headers={"Authorization": "Bearer worker-token"}
@@ -227,22 +229,21 @@ def test_worker_saves_facts_without_scope_known_and_preserves_conditions(
             assert [item.id for item in found] == expected
 
 
-def test_unresolved_historical_interval_is_skipped(worker_context, engine):
+def test_historical_content_without_interval_is_saved(worker_context, engine):
     client, tenant_id = worker_context
-    task_id = _add(client, key="skip", message_id="skip", content="项目专属要求。")
+    task_id = _add(client, key="past", message_id="past", content="用户以前在北京住过。")
     _run(engine, ScriptedModel({"temporal_kind": "historical"}))
     with Session(engine) as session:
-        assert _memories(session, tenant_id) == []
+        memory = _memories(session, tenant_id)[0]
+        source = session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant_id)).one()
+        assert memory.status == "active" and memory.effective_at == source.received_at
+        assert memory.expired_at == source.received_at + timedelta(days=180)
         task = session.get(MemoryTask, task_id)
-        assert task.status == "succeeded"
-        assert task.result_json == []
-        assert task.payload["execution"]["diagnostics"][0]["code"] == "TIME_UNRESOLVED"
-        assert not session.scalars(
-            select(MemoryAuditLog).where(
-                MemoryAuditLog.tenant_id == tenant_id,
-                MemoryAuditLog.reason_code == "TIME_UNRESOLVED",
-            )
-        ).all()
+        assert task.status == "succeeded" and task.result_json[0]["id"] == memory.id
+        result = task.payload["execution"]["processing_results"][0]
+        assert result["outcome"] == "added" and result["temporal_kind"] == "historical"
+        assert result["memory_status"] == "active" and source.processed_version == source.version
 
 
 def test_explicit_correction_invalidates_fact_and_derived_profile(worker_context, engine):
@@ -369,7 +370,9 @@ def test_late_source_cannot_replace_newer_fact(worker_context, engine):
     with Session(engine) as session:
         assert len(_memories(session, tenant_id)) == 1
         assert _memories(session, tenant_id)[0].status == "active"
-        assert session.get(MemoryTask, task_id).status == "pending"
+        task = session.get(MemoryTask, task_id)
+        assert task.status == "succeeded"
+        assert task.payload["execution"]["processing_results"][0]["reason_code"] == "LATE_STATEMENT"
 
 
 def _test_slice_budget():
@@ -575,7 +578,7 @@ def test_source_change_after_first_slice_reports_partial(worker_context, engine)
         assert len(_memories(session, tenant_id)) == 1
 
 
-def test_bounded_historical_fact_is_retained_without_current_embedding(worker_context, engine):
+def test_past_event_date_does_not_make_history_expire(worker_context, engine):
     client, tenant_id = worker_context
     _add(client, key="history1", message_id="history1", content="2025年住北京。")
     _run(
@@ -584,7 +587,7 @@ def test_bounded_historical_fact_is_retained_without_current_embedding(worker_co
             {
                 "temporal_kind": "historical",
                 "effective_at": datetime(2025, 1, 1, tzinfo=UTC),
-                "expired_at": datetime(2026, 1, 1, tzinfo=UTC),
+                "expired_at": None,
             }
         ),
     )
@@ -592,13 +595,13 @@ def test_bounded_historical_fact_is_retained_without_current_embedding(worker_co
     _run(engine, ScriptedModel())
     with Session(engine) as session:
         old, current = _memories(session, tenant_id)
-        assert old.status == "expired" and current.status == "active"
+        assert old.status == "active" and current.status == "active"
         assert old.conflict_group_id is None and current.supersedes_id is None
         assert (
             session.scalars(
                 select(MemoryEmbedding).where(MemoryEmbedding.memory_id == old.id)
             ).all()
-            == []
+            != []
         )
 
 
@@ -627,11 +630,11 @@ def test_delayed_assertion_is_bounded_as_history(worker_context, engine):
         current = next(memory for memory in memories if memory.id == current_id)
         historical = next(memory for memory in memories if memory.id != current_id)
         assert current.status == "active"
-        assert historical.status == "expired"
-        assert historical.expired_at == current.effective_at
+        assert historical.status == "active"
+        assert historical.expired_at == historical.effective_at + timedelta(days=180)
         assert historical.metadata_json["temporal_kind"] == "historical"
         assert "2026-09-24" in historical.content
-        assert session.get(MemoryTask, task_id).result_json == []
+        assert session.get(MemoryTask, task_id).result_json[0]["id"] == historical.id
 
 
 def test_supersession_rejects_invented_justification(worker_context, engine):

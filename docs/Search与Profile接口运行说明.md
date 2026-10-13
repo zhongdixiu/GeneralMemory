@@ -67,7 +67,7 @@
 
 ### 来源过滤的判定
 
-agent_id 沿事实的 supports 证据追溯到 source_record，再检查同租户、同用户、当前来源版本的 memory_task_source 与 fact_extract 任务，任务的 caller_agent_id 必须匹配。新 Add 来源具有凭证确定的独立 caller_agent_id，必须同时匹配该归属；实际支持事实的同 Agent history 来源也可参与完整证据组过滤。仅补交 history 不会独立形成事实，形成正式事实仍需本次目标用户的新陈述或确认。
+agent_id 沿事实的 supports 证据追溯到 source_record，再检查同租户、同用户、当前来源版本的 memory_task_source 与 fact_extract 任务，来源与任务的 agent_id 必须匹配。Add 的来源 agent_id 可由接入程序指定，省略时取凭证 caller_agent_id；可信调用身份仍单独保存在 caller_agent_id，来源过滤不授予权限。实际支持事实的同 Agent history 来源也可参与完整证据组过滤。仅补交 history 不会独立形成事实，形成正式事实仍需本次目标用户的新陈述或确认。
 
 迁移前未绑定 Agent 的旧来源继续要求 kind=target 的可追溯提交关系，不使用 created_by、消息 author_id 或 source_system 猜测来源 Agent。升级后不同 Agent 使用相同外部消息 ID 会形成各自的来源，不能通过重复提交另一会话的 ID 为原事实授予新的来源标记；同用户未过滤的长期记忆仍共享。
 

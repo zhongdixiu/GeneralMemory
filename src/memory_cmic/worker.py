@@ -8,11 +8,12 @@ import signal
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from threading import Event, Thread
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased, sessionmaker
@@ -28,7 +29,7 @@ from memory_cmic.extraction_input import (
     split_slice,
 )
 from memory_cmic.governance_state import mark_dirty
-from memory_cmic.lifecycle import govern_memory
+from memory_cmic.lifecycle import evidence_group_is_complete, govern_memory
 from memory_cmic.models import (
     MemoryEmbedding,
     MemoryEvidence,
@@ -72,6 +73,12 @@ class WorkerInputError(RuntimeError):
         self.committed_changes = committed_changes
 
 
+class TemporalDecisionError(ProviderError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class LeaseLostError(RuntimeError):
     pass
 
@@ -95,6 +102,8 @@ class TaskInput:
     task_signature: str
     associations: tuple[tuple[str, str, int, int], ...]
     source_states: dict[str, dict[str, Any]]
+    related_memories: list[dict[str, Any]] = field(default_factory=list)
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,11 +170,14 @@ def _memory_content_hash(summary: str, content: str) -> str:
 
 def _source_message(source: SourceRecord) -> dict[str, Any]:
     metadata = source.metadata_json or {}
-    return {
+    message = {
         "message_id": source.message_id,
         "role": metadata.get("role"),
         "content": source.raw_content,
-        "occurred_at": metadata.get("original_occurred_at", source.occurred_at.isoformat()),
+        "occurred_at": (source.occurred_at.astimezone(ZoneInfo("Asia/Shanghai")).isoformat()
+                        if source.occurred_at and metadata.get("timestamp_origin") !=
+                        "adapter_observed" else None),
+        "received_at": source.received_at.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(),
         "author_id": source.author_id,
         "tool_status": metadata.get("tool_status"),
         "reply_to_message_id": metadata.get("reply_to_message_id"),
@@ -176,9 +188,14 @@ def _source_message(source: SourceRecord) -> dict[str, Any]:
         "tool_calls": metadata.get("tool_calls", []),
         "attachments": metadata.get("attachments", []),
     }
+    # Omit empty optional metadata to leave budget for actual context and state hints.
+    return {key: value for key, value in message.items()
+            if key == "occurred_at" or value not in (None, [])}
 
 
-def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
+def _load_task_input(
+    session: Session, task: MemoryTask, *, mark_repeated: bool = True
+) -> TaskInput:
     if not all(
         [
             task.caller_agent_id,
@@ -208,6 +225,20 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
     if not target_rows:
         raise WorkerInputError("fact extraction task has no target sources")
 
+    first_orders = {
+        source_id: {"batch_seq": seq, "phase": 0 if kind == "history" else 1,
+                    "position": position}
+        for source_id, seq, kind, position in session.execute(
+            select(MemoryTaskSource.source_id, MemoryTask.batch_seq,
+                   MemoryTaskSource.kind, MemoryTaskSource.position)
+            .join(MemoryTask, MemoryTask.id == MemoryTaskSource.task_id)
+            .where(MemoryTaskSource.tenant_id == task.tenant_id,
+                   MemoryTaskSource.source_id.in_([source.id for _, source in target_rows]))
+            .distinct(MemoryTaskSource.source_id)
+            .order_by(MemoryTaskSource.source_id, MemoryTask.batch_seq,
+                      MemoryTaskSource.kind, MemoryTaskSource.position)
+        )
+    }
     targets = []
     repeated = []
     for association, source in target_rows:
@@ -215,11 +246,14 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
             raise WorkerInputError("target source is unavailable")
         if source.message_id is None:
             raise WorkerInputError("target source has no message_id")
-        if source.processed_version == source.version:
-            association.status = "skipped"
+        if source.processed_version == source.version and not task.payload.get("reprocess"):
+            if mark_repeated:
+                association.status = "skipped"
             repeated.append(source)
         else:
-            targets.append(_source_message(source))
+            targets.append({**_source_message(source), "batch_seq": task.batch_seq,
+                            "position": association.position,
+                            "statement_order": first_orders[source.id]})
 
     # A task boundary is its accepted batch sequence, independent of extraction success.
     query = (
@@ -231,11 +265,13 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
         .where(
             MemoryTask.tenant_id == task.tenant_id,
             MemoryTask.caller_agent_id == task.caller_agent_id,
+            MemoryTask.agent_id == task.agent_id,
             MemoryTask.source_system == task.source_system,
             MemoryTask.user_id == task.user_id,
             MemoryTask.session_id == task.session_id,
             MemoryTask.batch_seq < task.batch_seq,
             SourceRecord.caller_agent_id == task.caller_agent_id,
+            SourceRecord.agent_id == task.agent_id,
             SourceRecord.status == "active",
             SourceRecord.version == MemoryTaskSource.source_version,
         )
@@ -263,13 +299,15 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
             anchor.task_id == MemoryTaskSource.task_id,
             anchor.kind == "target",
             anchor.source_version == anchor_source.version,
-            anchor_source.metadata_json["timestamp_origin"].as_string() == "source",
+            anchor_source.metadata_json["timestamp_origin"].as_string().in_(
+                ["source", "server_received"]),
             anchor_source.occurred_at >= SourceRecord.occurred_at,
         ).correlate(MemoryTaskSource, SourceRecord).exists()
     )
     supplements = session.execute(
         query.where(MemoryTaskSource.kind == "history",
-                    SourceRecord.metadata_json["timestamp_origin"].as_string() == "source",
+                    SourceRecord.metadata_json["timestamp_origin"].as_string().in_(
+                        ["source", "server_received"]),
                     anchored_history)
         .order_by(SourceRecord.occurred_at.desc()).limit(30)
     ).all()
@@ -313,6 +351,67 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
                 examined.add(source.id)
                 pending.append(_source_message(source))
 
+    # Related state is bounded to this conversation and complete raw support groups.
+    related_memories = []
+    related_rows = session.scalars(
+        select(MemoryItem).where(
+            MemoryItem.tenant_id == task.tenant_id,
+            MemoryItem.subject_type == "user", MemoryItem.subject_id == task.user_id,
+            MemoryItem.cognitive_type == "fact", MemoryItem.status.in_(["active", "disputed"]),
+            or_(MemoryItem.expired_at.is_(None), MemoryItem.expired_at > datetime.now(UTC)),
+            MemoryItem.id.in_(select(MemoryEvidence.downstream_memory_id).join(
+                SourceRecord, SourceRecord.id == MemoryEvidence.upstream_source_id
+            ).where(
+                MemoryEvidence.tenant_id == task.tenant_id,
+                MemoryEvidence.status == "active",
+                SourceRecord.tenant_id == task.tenant_id,
+                SourceRecord.caller_agent_id == task.caller_agent_id,
+                SourceRecord.agent_id == task.agent_id,
+                SourceRecord.source_system == task.source_system,
+                SourceRecord.user_id == task.user_id, SourceRecord.session_id == task.session_id,
+                SourceRecord.id.in_(query.with_only_columns(SourceRecord.id)),
+            )),
+        ).order_by(MemoryItem.updated_at.desc(), MemoryItem.id).limit(5)
+    ).all()
+    for memory in related_rows:
+        edges = session.scalars(select(MemoryEvidence).where(
+            MemoryEvidence.tenant_id == task.tenant_id,
+            MemoryEvidence.downstream_memory_id == memory.id,
+            MemoryEvidence.status == "active",
+        ).order_by(MemoryEvidence.created_at.desc())).all()
+        groups = {}
+        for edge in edges:
+            groups.setdefault(edge.evidence_group_id, []).append(edge)
+        for group_id, group in groups.items():
+            if not evidence_group_is_complete(session, group_id):
+                continue
+            sources = [session.get(SourceRecord, edge.upstream_source_id)
+                       if edge.upstream_source_id else None for edge in group]
+            if any(source is None or source.status != "active" or
+                   source.version != edge.upstream_version or source.message_id is None or
+                   (source.tenant_id, source.caller_agent_id, source.agent_id, source.source_system,
+                    source.user_id, source.session_id) !=
+                   (task.tenant_id, task.caller_agent_id, task.agent_id, task.source_system,
+                    task.user_id, task.session_id)
+                   for source, edge in zip(sources, group, strict=True)):
+                continue
+            prior_sources = session.execute(query.where(
+                SourceRecord.id.in_([source.id for source in sources])
+            )).all()
+            if {row[1].id for row in prior_sources} != {source.id for source in sources}:
+                continue
+            for association, source, seq in prior_sources:
+                selected.setdefault(source.message_id, (source, seq, association.position))
+            related_memories.append({
+                "id": memory.id, "memory": memory.content, "status": memory.status,
+                "temporal_kind": (memory.metadata_json or {}).get("temporal_kind", "current"),
+                "retention_kind": (memory.metadata_json or {}).get("retention_kind"),
+                "version": memory.version,
+                "message_ids": [source.message_id for source in sources],
+                "state_fingerprint": _fingerprint([memory]),
+            })
+            break
+
     prior_ids = set(selected)
     for message in targets:
         reply = message.get("reply_to_message_id")
@@ -329,16 +428,20 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
         source, seq, position = item
         if source.id in target_source_ids or source in repeated:
             return (seq, position, 1, "", 0)
-        if (source.metadata_json or {}).get("timestamp_origin", "source") == "source":
+        if source.occurred_at is not None and (source.metadata_json or {}).get(
+            "timestamp_origin", "source") != "adapter_observed":
             following = next((row for row in ordered_targets
-                              if row[0].occurred_at >= source.occurred_at), None)
+                              if row[0].occurred_at is not None
+                              and row[0].occurred_at >= source.occurred_at), None)
             if following:
                 return (following[1], following[2], 0, source.occurred_at.isoformat(), position)
-            if ordered_targets and source.occurred_at < ordered_targets[0][0].occurred_at:
+            if (ordered_targets and ordered_targets[0][0].occurred_at is not None
+                    and source.occurred_at < ordered_targets[0][0].occurred_at):
                 return (0, -1, 0, source.occurred_at.isoformat(), position)
-        return (seq, -1, 0, source.occurred_at.isoformat(), position)
+        return (seq, -1, 0, source.occurred_at.isoformat() if source.occurred_at else "", position)
 
-    history = [_source_message(source) for source, _, _ in
+    history = [{**_source_message(source), "batch_seq": seq, "position": position}
+               for source, seq, position in
                sorted(selected.values(), key=context_order)
                if source.message_id not in target_ids]
     used_sources = [source for _, source in target_rows]
@@ -348,12 +451,14 @@ def _load_task_input(session: Session, task: MemoryTask) -> TaskInput:
         task_id=task.id,
         tenant_id=task.tenant_id,
         caller_agent_id=task.caller_agent_id,
+        agent_id=task.agent_id,
         user_id=task.user_id,
         source_system=task.source_system,
         session_id=task.session_id,
         batch_seq=task.batch_seq,
         targets=targets,
         history=history,
+        related_memories=related_memories,
         source_ids=source_ids,
         task_signature=json.dumps(
             {
@@ -479,6 +584,24 @@ def _add_evidence(
 
     task = session.get(MemoryTask, task_input.task_id)
     if not initial:
+        memory = session.get(MemoryItem, memory_id)
+        before_statement = (memory.metadata_json or {}).get("source_occurred_at")
+        incoming = _statement_metadata(fact, task_input)
+        old = dict(memory.metadata_json or {})
+        old_time = old.get("source_occurred_at")
+        new_time = incoming.get("source_occurred_at")
+        old_order = old.get("statement_order") or {}
+        same_conversation = all(
+            old_order.get(key, old_order.get("caller_agent_id") if key == "agent_id" else None)
+            == incoming["statement_order"].get(key)
+            for key in ("caller_agent_id", "agent_id", "source_system", "session_id")
+        )
+        if (new_time and old_time and old.get("timestamp_origin") != "adapter_observed"
+                and (datetime.fromisoformat(new_time) > datetime.fromisoformat(old_time)
+                     or (new_time == old_time and same_conversation and
+                         _statement_order(incoming, task_input) >
+                         _statement_order(old, task_input)))):
+            memory.metadata_json = {**old, **incoming}
         record_audit(
             session,
             tenant_id=task_input.tenant_id,
@@ -487,8 +610,11 @@ def _add_evidence(
             target_id=memory_id,
             reason_code="FACT_EVIDENCE_ADDED",
             task=task,
-            state_before={"evidence_count": evidence_count},
-            state_after={"evidence_count": evidence_count + len(set(fact.message_ids))},
+            state_before={"evidence_count": evidence_count,
+                          "source_occurred_at": before_statement},
+            state_after={"evidence_count": evidence_count + len(set(fact.message_ids)),
+                         "source_occurred_at": (memory.metadata_json or {}).get(
+                             "source_occurred_at")},
             context={
                 "evidence_group_id": group_id,
                 "task_id": task_input.task_id,
@@ -560,11 +686,40 @@ def _fingerprint(memories: list[MemoryItem]) -> str:
 
 
 def _fact_time(fact: ExtractedFact, task_input: TaskInput) -> datetime:
-    return fact.effective_at or max(
-        datetime.fromisoformat(m["occurred_at"])
-        for m in task_input.targets
-        if m["message_id"] in fact.message_ids and m["role"] == "user"
-    )
+    received = max(datetime.fromisoformat(m.get("received_at") or m["occurred_at"])
+                   for m in task_input.targets
+                   if m["message_id"] in fact.message_ids and m["role"] == "user")
+    return max(received, fact.effective_at) if fact.effective_at else received
+
+
+def _statement_order(message: dict[str, Any], task_input: TaskInput) -> tuple[int, int, int]:
+    order = message.get("statement_order") or {}
+    return (order.get("batch_seq", message.get("batch_seq", task_input.batch_seq)),
+            order.get("phase", 1), order.get("position", message.get("position", 0)))
+
+
+def _statement_metadata(fact: ExtractedFact, task_input: TaskInput) -> dict[str, Any]:
+    cited = [m for m in task_input.targets
+             if m["message_id"] in fact.message_ids and m["role"] == "user"]
+    known = all(m.get("occurred_at") and m.get("timestamp_origin") != "adapter_observed"
+                for m in cited)
+    latest = max(cited, key=lambda m: (m.get("occurred_at") or "",
+                                      _statement_order(m, task_input)))
+    if known:
+        latest = max(cited, key=lambda m: (datetime.fromisoformat(m["occurred_at"]),
+                                          _statement_order(m, task_input)))
+    return {
+        "source_occurred_at": latest["occurred_at"] if known else None,
+        "timestamp_origin": latest.get("timestamp_origin", "source") if known
+                            else "adapter_observed",
+        "statement_order": {"caller_agent_id": task_input.caller_agent_id,
+                            "agent_id": task_input.agent_id or task_input.caller_agent_id,
+                            "source_system": task_input.source_system,
+                            "session_id": task_input.session_id,
+                            **dict(zip(("batch_seq", "phase", "position"),
+                                       _statement_order(latest, task_input), strict=True))},
+        "source_message_ids": fact.message_ids,
+    }
 
 
 def _check_governance(
@@ -581,24 +736,30 @@ def _check_governance(
         raise ProviderError("governance output cites an unknown memory ID")
     if decision.historical_before_id:
         boundary = by_id[decision.historical_before_id]
-        source_time = max(
-            datetime.fromisoformat(m["occurred_at"])
-            for m in task_input.targets
-            if m["message_id"] in fact.message_ids and m["role"] == "user"
-        )
-        newer_source = datetime.fromisoformat(
-            boundary.get("source_occurred_at") or boundary["effective_at"]
-        )
-        if source_time >= newer_source:
-            raise ProviderError("historical boundary cannot downgrade a newer assertion")
-        if (
-            fact.temporal_kind != "current"
-            or boundary["temporal_kind"] != "current"
-            or _fact_time(fact, task_input) >= datetime.fromisoformat(boundary["effective_at"])
-        ):
-            raise ProviderError(
-                "historical boundary must follow the incoming current-state assertion"
-            )
+        value = _statement_metadata(fact, task_input)["source_occurred_at"]
+        boundary_time = boundary.get("source_occurred_at")
+        if (value is None or not boundary_time
+                or boundary.get("timestamp_origin") == "adapter_observed"):
+            raise TemporalDecisionError("UNKNOWN_STATEMENT_ORDER",
+                                        "original statement order unknown")
+        incoming = datetime.fromisoformat(value)
+        boundary_date = datetime.fromisoformat(boundary_time)
+        order = boundary.get("statement_order")
+        earlier_tie = bool(order and
+                           (order["caller_agent_id"],
+                            order.get("agent_id", order["caller_agent_id"]), order["source_system"],
+                            order["session_id"]) ==
+                           (task_input.caller_agent_id,
+                            task_input.agent_id or task_input.caller_agent_id,
+                            task_input.source_system,
+                            task_input.session_id)
+                           and _statement_order(_statement_metadata(fact, task_input), task_input) <
+                           _statement_order(boundary, task_input))
+        if incoming > boundary_date or (incoming == boundary_date and not earlier_tie):
+            raise TemporalDecisionError("INVALID_HISTORICAL_BOUNDARY",
+                                        "historical boundary cannot downgrade a newer assertion")
+        if fact.temporal_kind != "current" or boundary["temporal_kind"] != "current":
+            raise ProviderError("historical boundary requires two current-state declarations")
     selected = [by_id[mid] for mid in decision.memory_ids]
     for candidate in [by_id[mid] for mid in references]:
         if "business_domains" in candidate and not _compatible_business(fact, candidate):
@@ -614,8 +775,8 @@ def _check_governance(
         ) != (fact.expired_at.isoformat() if fact.expired_at else None):
             raise ProviderError("duplicate has different temporal applicability")
     if decision.action == "SUPERSEDE":
-        if fact.change_kind == "none" or fact.temporal_kind == "historical":
-            raise ProviderError("supersession requires an explicit current-state change")
+        if fact.change_kind == "none":
+            raise ProviderError("supersession requires an explicit user change")
         cited = next(
             (
                 m
@@ -632,32 +793,38 @@ def _check_governance(
             or decision.justification_quote not in cited["content"]
         ):
             raise ProviderError("supersession requires a verbatim target user justification")
+        if not cited.get("occurred_at") or cited.get("timestamp_origin") == "adapter_observed":
+            raise TemporalDecisionError("UNKNOWN_STATEMENT_ORDER",
+                                        "correction statement time unknown")
         incoming = datetime.fromisoformat(cited["occurred_at"])
         for candidate in selected:
-            if candidate.get("temporal_kind", "current") == "historical":
-                raise ProviderError("supersession cannot erase a historical interval")
-            if cited.get("timestamp_origin") == "adapter_observed" or candidate.get(
-                "timestamp_origin") == "adapter_observed":
-                raise ProviderError("observed timestamps cannot establish supersession recency")
-            source_time = candidate.get("source_occurred_at") or candidate["effective_at"]
-            if incoming < datetime.fromisoformat(source_time):
-                raise ProviderError("late input cannot supersede a newer fact")
-            if fact.change_kind == "update" and _fact_time(
-                fact, task_input
-            ) < datetime.fromisoformat(candidate["effective_at"]):
-                raise ProviderError("state update cannot move backwards in time")
+            source_time = candidate.get("source_occurred_at")
+            if not source_time or candidate.get("timestamp_origin") == "adapter_observed":
+                # A current explicit user correction may identify an undated older assertion.
+                if not set(fact.message_ids).intersection(candidate.get("source_message_ids", [])):
+                    raise TemporalDecisionError("UNKNOWN_STATEMENT_ORDER",
+                                                "undated assertion lacks correction context")
+            elif incoming < datetime.fromisoformat(source_time):
+                raise TemporalDecisionError("LATE_STATEMENT",
+                                            "late input cannot supersede a newer fact")
+            elif incoming == datetime.fromisoformat(source_time):
+                order = candidate.get("statement_order")
+                if order and (order["caller_agent_id"],
+                            order.get("agent_id", order["caller_agent_id"]), order["source_system"],
+                              order["session_id"]) == (
+                    task_input.caller_agent_id, task_input.agent_id or task_input.caller_agent_id,
+                    task_input.source_system, task_input.session_id
+                ) and _statement_order(cited, task_input) < _statement_order(candidate, task_input):
+                    raise TemporalDecisionError("LATE_STATEMENT",
+                                                "same-time correction precedes candidate")
             if candidate["status"] == "disputed" and fact.change_kind != "clarification":
                 raise ProviderError("dispute recovery requires explicit user clarification")
     if decision.action == "DISPUTE":
-        for candidate in selected:
-            start = datetime.fromisoformat(candidate["effective_at"])
-            end = (
-                datetime.fromisoformat(candidate["expired_at"]) if candidate["expired_at"] else None
-            )
-            if (fact.expired_at is not None and fact.expired_at <= start) or (
-                end is not None and end <= _fact_time(fact, task_input)
-            ):
-                raise ProviderError("non-overlapping historical periods cannot be disputed")
+        if _statement_metadata(fact, task_input)["source_occurred_at"] is None or any(
+            not m.get("source_occurred_at") or m.get("timestamp_origin") == "adapter_observed"
+            for m in selected
+        ):
+            raise TemporalDecisionError("UNKNOWN_STATEMENT_ORDER", "contradiction order is unknown")
     if decision.action in {"SUPERSEDE", "DISPUTE"}:
         groups = {m["conflict_group_id"] for m in selected if m["conflict_group_id"]}
         group_ids = {m["id"] for m in candidates if m["conflict_group_id"] in groups}
@@ -679,6 +846,8 @@ def _candidate(memory: MemoryItem) -> dict[str, Any]:
         "temporal_kind": (memory.metadata_json or {}).get("temporal_kind", "current"),
         "source_occurred_at": (memory.metadata_json or {}).get("source_occurred_at"),
         "timestamp_origin": (memory.metadata_json or {}).get("timestamp_origin", "source"),
+        "statement_order": (memory.metadata_json or {}).get("statement_order"),
+        "source_message_ids": (memory.metadata_json or {}).get("source_message_ids", []),
     }
 
 
@@ -704,7 +873,12 @@ def _plan_decisions(
                 memories = _scope_memories(session, task_input, fact)
                 fingerprints[scope] = _fingerprint(memories)
                 working[scope] = [
-                    _candidate(m) for m in sorted(memories, key=lambda m: m.updated_at)
+                    {**_candidate(m), "source_message_ids": (
+                        (m.metadata_json or {}).get("source_message_ids") or next(
+                            (r["message_ids"] for r in task_input.related_memories
+                             if r["id"] == m.id),
+                            []))}
+                    for m in sorted(memories, key=lambda m: m.updated_at)
                 ]
             available = working[scope]
             eligible = [m for m in available if _compatible_business(fact, m)]
@@ -718,10 +892,6 @@ def _plan_decisions(
                     and m["temporal_kind"] == fact.temporal_kind
                     and m["explicit_expired_at"]
                     == (fact.expired_at.isoformat() if fact.expired_at else None)
-                    and (
-                        fact.temporal_kind != "historical"
-                        or m["effective_at"] == _fact_time(fact, task_input).isoformat()
-                    )
                 ),
                 None,
             )
@@ -761,35 +931,38 @@ def _plan_decisions(
                 decision = fact_model.resolve(
                     fact=fact, candidates=candidates, targets=task_input.targets
                 )
-                unknown_recency = any(
-                    m.get("timestamp_origin") == "adapter_observed"
-                    for m in task_input.targets if m["message_id"] in fact.message_ids
-                ) or any(m.get("timestamp_origin") == "adapter_observed"
-                         for m in candidates if m["id"] in {
-                             *decision.memory_ids, decision.historical_before_id,
-                         })
-                if unknown_recency and (
-                    decision.action in {"SUPERSEDE", "DISPUTE"} or decision.historical_before_id
-                ):
+                try:
+                    _check_governance(decision, fact, candidates, task_input)
+                    if (decision.action == "SUPERSEDE"
+                            and _fact_time(fact, task_input) > datetime.now(UTC)):
+                        # Future applicability preserves the current rule until its stated start.
+                        # Query applicability chooses the later conditional rule once it begins.
+                        decision = GovernanceDecision(action="ADD")
+                except TemporalDecisionError as exc:
                     decisions.append(FactDecision(
                         fact, embedding, decision, fingerprints[scope], "", None,
-                        skip_reason="UNKNOWN_EVENT_TIME",
+                        skip_reason=exc.code,
                     ))
                     continue
-                _check_governance(decision, fact, candidates, task_input)
             else:
                 decision = GovernanceDecision(action="ADD")
         if decision.historical_before_id:
             boundary = next(m for m in candidates if m["id"] == decision.historical_before_id)
-            start_time = _fact_time(fact, task_input)
+            start_time = datetime.fromisoformat(
+                _statement_metadata(fact, task_input)["source_occurred_at"])
+            local_start = start_time.astimezone(ZoneInfo("Asia/Shanghai")).isoformat()
             fact = fact.model_copy(
                 update={
-                    "memory": f"在 {start_time.isoformat()} 时：{fact.memory}",
+                    "memory": (f"用户在 {local_start} "
+                               f"声明：{fact.memory}（此为旧陈述，"
+                               f"{boundary['source_occurred_at']} 已有后续状态陈述。）"),
                     "temporal_kind": "historical",
-                    "effective_at": start_time,
-                    "expired_at": datetime.fromisoformat(boundary["effective_at"]),
+                    "effective_at": None,
+                    "expired_at": None,
                 }
             )
+            consume_call()
+            embedding = embedder.embed([fact.memory])[0]
         memory_id = f"mem_{uuid4().hex}"
         group = None
         if decision.action == "DISPUTE":
@@ -824,11 +997,7 @@ def _plan_decisions(
                 "explicit_expired_at": fact.expired_at.isoformat() if fact.expired_at else None,
                 "conflict_group_id": group,
                 "temporal_kind": fact.temporal_kind,
-                "source_occurred_at": max(
-                    datetime.fromisoformat(m["occurred_at"])
-                    for m in task_input.targets
-                    if m["message_id"] in fact.message_ids and m["role"] == "user"
-                ).isoformat(),
+                **_statement_metadata(fact, task_input),
             }
             if expiry is None or expiry > datetime.now(UTC):
                 available.append(new_candidate)
@@ -862,6 +1031,11 @@ def _commit_results(
     for decision in decisions:
         if decision.skip_reason:
             continue
+        expiry = calculate_expired_at(retention_kind=decision.fact.retention_kind,
+                                      effective_at=_fact_time(decision.fact, task_input),
+                                      explicit_expired_at=decision.fact.expired_at)
+        if expiry is not None and expiry <= _fact_time(decision.fact, task_input):
+            raise WorkerInputError("normalized memory retention interval is invalid")
         memories = _scope_memories(session, task_input, decision.fact)
         session.scalars(
             select(MemoryItem)
@@ -935,16 +1109,8 @@ def _commit_results(
                 "temporal_kind": fact.temporal_kind,
                 "retention_kind": fact.retention_kind,
                 "explicit_expired_at": fact.expired_at.isoformat() if fact.expired_at else None,
-                "source_occurred_at": max(
-                    datetime.fromisoformat(m["occurred_at"])
-                    for m in task_input.targets
-                    if m["message_id"] in fact.message_ids and m["role"] == "user"
-                ).isoformat(),
-                "timestamp_origin": "adapter_observed" if any(
-                    m.get("timestamp_origin") == "adapter_observed"
-                    for m in task_input.targets
-                    if m["message_id"] in fact.message_ids and m["role"] == "user"
-                ) else "source",
+                **_statement_metadata(fact, task_input),
+                "time_semantics_version": 3,
                 "governance_action": governance.action,
                 "previous_memory_ids": governance.memory_ids,
             },
@@ -967,7 +1133,8 @@ def _commit_results(
                     embedding=decision.embedding,
                 )
             )
-            results.append({"id": memory.id, "memory": fact.memory, "event": "ADD"})
+            if memory.effective_at <= datetime.now(UTC):
+                results.append({"id": memory.id, "memory": fact.memory, "event": "ADD"})
         record_audit(
             session,
             tenant_id=task_input.tenant_id,
@@ -979,11 +1146,7 @@ def _commit_results(
             context={
                 "evidence_group_id": group_id,
                 "message_ids": fact.message_ids,
-                "timestamp_origin": "adapter_observed" if any(
-                    m.get("timestamp_origin") == "adapter_observed"
-                    for m in task_input.targets
-                    if m["message_id"] in fact.message_ids and m["role"] == "user"
-                ) else "source",
+                "time_semantics_version": 3,
                 "governance_action": governance.action,
             },
             state_after={
@@ -1016,7 +1179,8 @@ def _slice_processing_results(session, task_input, decisions, assessments, skipp
         for index, decision in matching:
             if decision.skip_reason:
                 results.append({**location, "outcome": "time_unresolved",
-                                "reason": decision.skip_reason})
+                                "reason": decision.skip_reason,
+                                "reason_code": decision.skip_reason})
                 continue
             governance = decision.governance
             memory_id = (governance.memory_ids[0] if governance.action == "DUPLICATE"
@@ -1026,19 +1190,27 @@ def _slice_processing_results(session, task_input, decisions, assessments, skipp
                        "SUPERSEDE": "superseded", "DISPUTE": "disputed"}[governance.action]
             if index in unchanged:
                 outcome = "already_exists"
-            elif memory.status == "expired":
-                outcome = "historical"
-            results.append({**location, "outcome": outcome, "memory_ids": [memory_id]})
+            results.append({**location, "outcome": outcome, "memory_ids": [memory_id],
+                            "temporal_kind": (memory.metadata_json or {}).get(
+                                "temporal_kind", "current"),
+                            "memory_status": memory.status})
         for item in skipped:
             if message["message_id"] in item["message_ids"]:
-                results.append({**location, "outcome": "time_unresolved", "reason": item["code"]})
+                results.append({**location, "outcome": "time_unresolved", "reason": item["code"],
+                                "reason_code": item["code"]})
         assessment = by_id.get(message["message_id"])
         if assessment and assessment.outcome != "evaluated":
-            results.append({**location, "outcome": assessment.outcome, "reason": assessment.reason})
+            outcome = ("time_unresolved" if assessment.reason_code in
+                       {"MISSING_DATE_ANCHOR", "UNKNOWN_STATEMENT_ORDER"} else assessment.outcome)
+            results.append({**location, "outcome": outcome, "reason": assessment.reason,
+                            "reason_code": assessment.reason_code or (
+                                "MISSING_REFERENT" if outcome == "context_insufficient" else None)})
         elif not matching and not any(message["message_id"] in item["message_ids"]
                                       for item in skipped):
             outcome = "evaluated_no_fact" if message["role"] == "user" else "no_durable_value"
-            results.append({**location, "outcome": outcome})
+            results.append({**location, "outcome": outcome,
+                            "reason_code": "UNCLASSIFIED_EMPTY_EXTRACTION"
+                            if outcome == "evaluated_no_fact" else None})
     return results
 
 
@@ -1058,6 +1230,18 @@ def _leased_task(session, *, tenant_id, task_id, worker_id, lease_token):
     if task is None:
         raise LeaseLostError("task lease was lost")
     return task
+
+
+def _related_state_matches(session: Session, snapshot: dict[str, Any]) -> bool:
+    memory = session.get(MemoryItem, snapshot["id"])
+    return (memory is not None and memory.status in {"active", "disputed"}
+            and (memory.expired_at is None or memory.expired_at > datetime.now(UTC))
+            and _fingerprint([memory]) == snapshot["state_fingerprint"])
+
+
+def _validate_related(session: Session, current: dict[str, Any]) -> None:
+    if any(not _related_state_matches(session, m) for m in current.get("related_memories", [])):
+        raise ProviderError("related memory state changed; extraction must be repeated")
 
 
 def _save_execution(task: MemoryTask, execution: dict[str, Any]) -> None:
@@ -1081,6 +1265,7 @@ def _validate_input(
         task.id,
         task.tenant_id,
         task.caller_agent_id,
+        task.agent_id or task.caller_agent_id,
         task.user_id,
         task.source_system,
         task.session_id,
@@ -1090,6 +1275,7 @@ def _validate_input(
         task_input.task_id,
         task_input.tenant_id,
         task_input.caller_agent_id,
+        task_input.agent_id or task_input.caller_agent_id,
         task_input.user_id,
         task_input.source_system,
         task_input.session_id,
@@ -1139,8 +1325,10 @@ def _validate_input(
         or signature != task_input.task_signature
         or actual_associations != task_input.associations
         or states != task_input.source_states
-        or any((source.caller_agent_id, source.user_id, source.source_system, source.session_id)
-               != (task_input.caller_agent_id, task_input.user_id,
+        or any((source.caller_agent_id, source.agent_id, source.user_id,
+                source.source_system, source.session_id)
+               != (task_input.caller_agent_id, task_input.agent_id or task_input.caller_agent_id,
+                   task_input.user_id,
                    task_input.source_system, task_input.session_id) for source in sources)
     ):
         raise WorkerInputError(
@@ -1173,10 +1361,14 @@ def _process_task(
             raise WorkerInputError("unsupported task type")
         execution = task.payload.get("execution")
         if execution is None:
+            if task.payload.get("config_version", 2) < 3:
+                raise WorkerInputError("legacy time-contract task must be drained by its "
+                                       "original worker or explicitly reprocessed")
             task_input = _load_task_input(session, task)
             try:
                 slices = build_slices(
-                    task_input.targets, task_input.history, system=EXTRACTION_PROMPT, budget=budget
+                    task_input.targets, task_input.history, system=EXTRACTION_PROMPT, budget=budget,
+                    related_memories=task_input.related_memories
                 )
             except ValueError as exc:
                 raise WorkerInputError(str(exc)) from exc
@@ -1203,6 +1395,13 @@ def _process_task(
                     {**gap, "target_message_id": message["message_id"],
                      "action_taken": "reported_to_extractor"}
                     for message in task_input.targets for gap in message.get("context_gaps", [])
+                ] + [
+                    {"code": "SOURCE_TIME_AFTER_RECEIPT", "target_message_id": m["message_id"],
+                     "occurred_at": m["occurred_at"], "received_at": m["received_at"],
+                     "action_taken": "preserved_explicit_source_time"}
+                    for m in task_input.targets if m.get("occurred_at") and
+                    datetime.fromisoformat(m["occurred_at"]) >
+                    datetime.fromisoformat(m["received_at"])
                 ],
                 "processing_results": [
                     {"message_id": source.message_id, "outcome": "already_processed"}
@@ -1216,6 +1415,8 @@ def _process_task(
                 ],
                 "budget": asdict(budget),
                 "prompt_version": PROMPT_VERSION,
+                "time_semantics_version": 3,
+                "timezone": "Asia/Shanghai",
             }
             _save_execution(task, execution)
             task.result_json = []
@@ -1235,6 +1436,8 @@ def _process_task(
                 )
             _validate_input(session, task, task_input, committed_changes=execution["changed"])
             state = dict(task.payload["execution"])
+            if state["next_slice"] < len(state["slices"]):
+                _validate_related(session, state["slices"][state["next_slice"]])
             if state["model_calls"] >= budget.max_model_calls:
                 raise ModelCallBudgetError("task model call budget exhausted")
             state["model_calls"] += 1
@@ -1244,6 +1447,25 @@ def _process_task(
     while execution["next_slice"] < len(execution["slices"]):
         index = execution["next_slice"]
         current = execution["slices"][index]
+        # Refresh optional state hints against the frozen raw-source set. A changed hint
+        # discards uncommitted model output; committed slices and raw input remain intact.
+        with session_factory.begin() as session:
+            task = _leased_task(session, **ownership)
+            related = current.get("related_memories", [])
+            stale = any(not _related_state_matches(session, memory) for memory in related)
+            if stale:
+                fresh = _load_task_input(session, task, mark_repeated=False).related_memories
+                frozen_ids = {m["message_id"] for m in [*current["targets"], *current["history"]]}
+                current["related_memories"] = [m for m in fresh
+                                               if set(m["message_ids"]).issubset(frozen_ids)]
+                selected = select_history(current["targets"], current["history"],
+                                          system=EXTRACTION_PROMPT,
+                                          limit=budget.input_tokens - budget.output_tokens,
+                                          related_memories=current["related_memories"])
+                if selected is None:
+                    current["related_memories"] = []
+                execution.pop("prepared_slice", None)
+                _save_execution(task, execution)
         slice_input = replace(task_input, targets=current["targets"], history=current["history"])
         prepared = execution.get("prepared_slice")
         assessments = []
@@ -1251,7 +1473,7 @@ def _process_task(
             facts = []
             assessments = [ExtractionAssessment(
                 message_id=m["message_id"], outcome="context_insufficient",
-                reason=current["context_error"],
+                reason=current["context_error"], reason_code="CONTEXT_BUDGET_EXCEEDED",
             ) for m in current["targets"]]
         elif prepared and prepared["index"] == index:
             facts = [ExtractedFact.model_validate(value) for value in prepared["facts"]]
@@ -1263,11 +1485,15 @@ def _process_task(
                 extract_with_outcomes = getattr(fact_model, "extract_with_outcomes", None)
                 if extract_with_outcomes is not None:
                     output = extract_with_outcomes(
-                        targets=slice_input.targets, history=slice_input.history)
+                        targets=slice_input.targets, history=slice_input.history,
+                        **({"related_memories": current.get("related_memories", [])}
+                           if isinstance(fact_model, QwenFactModel) else {}))
                     facts, assessments = output.facts, output.assessments
                 else:
                     facts = fact_model.extract(
-                        targets=slice_input.targets, history=slice_input.history)
+                        targets=slice_input.targets, history=slice_input.history,
+                        **({"related_memories": current.get("related_memories", [])}
+                           if isinstance(fact_model, QwenFactModel) else {}))
             except OutputLimitError as exc:
                 try:
                     children = split_slice(current)
@@ -1284,6 +1510,7 @@ def _process_task(
                     selected = select_history(
                         child["targets"], child["history"], system=EXTRACTION_PROMPT,
                         limit=budget.input_tokens - budget.output_tokens,
+                        related_memories=child.get("related_memories", []),
                     )
                     if selected is None:
                         child.update(history=[], context_error="CONTEXT_BUDGET_EXCEEDED")
@@ -1332,10 +1559,8 @@ def _process_task(
         skipped = []
         for fact in facts:
             reason = candidate_skip_reason(fact)
-            if any(m.get("timestamp_origin") == "adapter_observed"
-                   for m in slice_input.targets if m["message_id"] in fact.message_ids):
-                if fact.change_kind != "none":
-                    reason = "UNKNOWN_EVENT_TIME"
+            if fact.expired_at is not None and fact.expired_at <= _fact_time(fact, slice_input):
+                reason = "INVALID_RETENTION_INTERVAL"
             if reason:
                 skipped.append(
                     {
@@ -1367,6 +1592,7 @@ def _process_task(
             _validate_input(session, task, task_input, committed_changes=execution["changed"])
             if task.payload["execution"]["next_slice"] != index:
                 raise LeaseLostError("slice progress changed")
+            _validate_related(session, current)
             results, changed, unchanged = _commit_results(
                 session, task=task, task_input=slice_input, decisions=decisions, embedder=embedder
             )
@@ -1400,6 +1626,9 @@ def _process_task(
                     )
                     if not incomplete:
                         source.processed_version = source.version
+                    elif task.payload.get("reprocess"):
+                        # The audited reassessment replaces a mistaken completion marker.
+                        source.processed_version = None
                     association = session.get(MemoryTaskSource, (tenant_id, task_id, source.id))
                     association.status = "processed"
             # Fence every slice, including non-terminal commits, against expired leases.

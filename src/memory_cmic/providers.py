@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -19,11 +20,18 @@ class OutputLimitError(ProviderError):
     pass
 
 
-PROMPT_VERSION = "p02-v11-context-evidence"
+PROMPT_VERSION = "p02-v12-receipt-content-time"
 
 EXTRACTION_PROMPT = (
-    "Extract atomic facts with value beyond a single task, newly stated or explicitly "
-    "confirmed by target user messages. "
+    "Extract atomic facts newly stated or explicitly confirmed by target user messages, "
+    "including temporary plans. FIRST check referents and required date anchors: missing "
+    "context is context_insufficient, NEVER no_durable_value or an unresolved fact. "
+    "'记住这个' without supporting context is MISSING_REFERENT, not a greeting or no value. "
+    "Separately evaluate whether a target confirms, refines, "
+    "corrects, cancels or limits an existing memory. Such maintenance MUST be extracted "
+    "even if it has no standalone lasting value. '确切说是这周六' refines the supported "
+    "plan's date; '这周末还是不去了，要加班' cancels that plan, preserving object/date/reason. "
+    "Use related_memories only as state hints; cite supporting raw messages, never memory IDs. "
     "Write each memory as one short, standalone declarative sentence with an explicit "
     "subject, predicate and object or complement. For facts about the speaker, use 用户 "
     "as the Chinese subject (the user in English), not 我, 我们, 你, I, we or you. "
@@ -35,8 +43,7 @@ EXTRACTION_PROMPT = (
     "Resolve references to other people to their supported names or roles, not to 用户: "
     "if history identifies 他 as 李明, '以后邮件的审批都交给他负责。' can become "
     "'李明负责以后的邮件审批。'. Never guess a person, place or object. "
-    "Keep literal names, titles and verbatim quotations unchanged: '我喜欢电影《我和我的祖国》。' "
-    "becomes '用户喜欢电影《我和我的祖国》。', not a replacement inside the title. "
+    "Keep literal names, titles (e.g. 《我和我的祖国》) and quotations unchanged. "
     "History cannot independently produce facts. Cite all necessary target AND history "
     "message_ids as one support group; at least one cited message must be a TARGET user. "
     "A confirmation must cite the proposal/question that gives it meaning. "
@@ -49,10 +56,9 @@ EXTRACTION_PROMPT = (
     "These are initial canonical labels, NOT an exhaustive enum. For other explicit scenarios "
     "extract a short, stable semantic label in the user's language, e.g. 方案编写. "
     "Reuse canonical labels for their synonyms. Split independent applicability requirements. "
-    "Personal identity, birthdays, residence, occupations, preferences and habits do not "
-    "require a business scenario: use business_domains=null unless the fact itself limits "
-    "business applicability. For example, '用户喜欢吃年糕。' is a long_term personal preference "
-    "with business_domains=null. Preserve every explicit business, project, customer, "
+    "Identity, birthdays, residence, occupations, preferences and habits use business_domains=null "
+    "unless explicitly business-limited. '用户喜欢吃年糕' is long_term with null domains. "
+    "Preserve every explicit business, project, customer, "
     "recipient, occasion and temporal condition in memory text. Do not invent restrictions "
     "from the source system or topic. Difficulty assigning a business label must not discard "
     "a complete, supported fact; preserve its stated activity and use a short semantic label "
@@ -62,15 +68,10 @@ EXTRACTION_PROMPT = (
     "assigned. If limited to a particular project set project_limited=true and project_context "
     "to its explicit name or self-contained identifying context; preserve that condition in "
     "memory text. Otherwise project_limited=false and project_context=null. "
-    "Unknown or ambiguous project names do not by themselves invalidate a self-contained "
-    "fact. Preserve the supplied project wording without guessing identity. Do not broaden a "
-    "project rule into a general preference. A project material directory does not imply disk. "
-    "Literal names/placeholders such as 未知项目 and 重名项目 are still project_context; "
-    "do not drop them solely because they are unknown/ambiguous. "
-    "For '重名项目的材料放在批准目录', preserve that project condition and use an applicable "
-    "material-management scenario label (not disk unless cloud drive is stated). "
-    "Short standalone requirements such as '项目方案详细说明。' are durable preferences: "
-    "extract with a proposal-writing label, project_limited=false. "
+    "Preserve unknown/ambiguous literal project names (e.g. 未知项目, 重名项目) in "
+    "project_context; never guess identity or broaden them. Material directories use a "
+    "material-management scenario, not disk unless cloud drive is stated. "
+    "'项目方案详细说明' uses a proposal-writing label and project_limited=false. "
     "Use the original language in memory text. "
     "Set retention_kind=temporary for explicitly temporary or stage-specific facts, such as "
     "a current-phase responsibility or a near-term recurring requirement; regular for other "
@@ -85,40 +86,47 @@ EXTRACTION_PROMPT = (
     "Do not extract single-task execution progress, tool results or completion "
     "notifications such as 'generating the file' or 'email sent'. Preserve uncertainty: "
     "a possible plan is not a definite future event. "
-    "Preserve temporal meaning in self-contained text. Resolve stated dates relative to "
-    "occurred_at only when timestamp_origin=source. adapter_observed is ingestion observation "
-    "time, not the original event time: do not resolve relative dates or infer state recency "
-    "from it. Such messages have occurred_at=null in model input. For example, '本周我负责 "
-    "材料审核，下周恢复原安排' with unknown event time must produce NO fact and a "
-    "context_insufficient assessment. Missing required dates must be context_insufficient. "
-    "not processing time. Use ISO8601 timestamps with timezone; never fabricate precision. "
-    "expired_at is only an explicitly stated deadline or historical interval boundary; "
-    "never compute a default TTL. For 'valid this week', use the next Monday at 00:00 in "
-    "the source message's timezone as the exclusive deadline. "
-    "temporal_kind=historical requires an effective_at and expired_at interval. "
-    "A year-only historical period uses Jan 1 through Jan 1 of the next year (exclusive). "
-    "If a current move/update is stated only by year or month, set effective_at=null; "
-    "do not invent the exact first day as the event date. "
-    "change_kind is none, correction, update, or clarification; use clarification only "
-    "for explicit "
-    "resolution of contradictory prior statements, update only for an explicit "
-    "current-state change. "
-    "Unresolved references or missing necessary context yield no fact and a "
-    "context_insufficient assessment; no durable value yields no_durable_value. "
-    "For EACH target user message, return an assessment of evaluated, no_durable_value "
-    "or context_insufficient with a short reason (no chain-of-thought). A message may have "
-    "facts and also context_insufficient when another statement lacks context. "
+    "Preserve event dates, past periods and business applicability conditions in standalone "
+    "memory text. Resolve relative dates using occurred_at in Asia/Shanghai (Beijing), "
+    "only for timestamp_origin=source or server_received. 本周六 means Saturday of that "
+    "Beijing calendar week. adapter_observed/occurred_at=null means unknown original time; "
+    "Unknown TARGETS and history both lack date anchors: NEVER use ingestion/receipt time. "
+    "For undated '这周六去动物园' OR '本周我负责材料审核，下周恢复原安排', "
+    "output facts=[] with MISSING_DATE_ANCHOR even though a temporary fact has value; "
+    "do not save unresolved '这周六' or invent a concrete date. Missing essential dates require "
+    "context_insufficient with reason_code=MISSING_DATE_ANCHOR, but date-independent facts "
+    "can still be saved. A reliable cited context may supply the date anchor. "
+    "temporal_kind=current|historical describes CONTENT, not lifecycle: '以前在北京住过' "
+    "is historical/regular without requiring exact start/end dates. Never infer current "
+    "residence from a past experience. Past dates alone never expire a new memory. "
+    "effective_at is only an explicitly FUTURE applicability start (e.g. 下月1日起周报用列表), "
+    "otherwise null. A future plan is known NOW: its event date belongs in memory text, "
+    "not effective_at. expired_at is ONLY an explicit memory storage deadline, not an event "
+    "end or business deadline. '本周我负责材料审核，下周恢复原安排' must have "
+    "expired_at=null; keep the week interval in TEXT. '我2024年住过北京' also has "
+    "expired_at=null. Only '这条记忆只保存到2026年12月1日' sets a storage expiry. "
+    "Preserve business deadlines in text. Never compute TTL. "
+    "Use timezone-aware ISO8601 for these two storage fields; never fabricate date precision. "
+    "change_kind=correction for explicit correction, update for explicit state change/cancel, "
+    "clarification for explicit refinement or resolution of prior statements, otherwise none. "
+    "For EACH target user return exactly one assessment: evaluated with at least one cited "
+    "fact; no_durable_value only when neither new value NOR maintenance exists; "
+    "context_insufficient when necessary context is missing (MISSING_REFERENT or "
+    "MISSING_DATE_ANCHOR). A partly understood message may have facts and insufficiency. "
     "Return JSON {facts:[{memory:string,message_ids:[string],business_domains:[labels]|null,"
     "project_limited:boolean,project_context:string|null,"
     "temporal_kind:current|historical,retention_kind:temporary|regular|long_term,"
     "change_kind:none|correction|update|clarification,effective_at:timestamp|null,"
     "expired_at:timestamp|null}],assessments:[{message_id:string,"
-    "outcome:evaluated|no_durable_value|context_insufficient,reason:string}]}."
+    "outcome:evaluated|no_durable_value|context_insufficient,reason:string,"
+    "reason_code:MISSING_REFERENT|MISSING_DATE_ANCHOR|null}]}."
 )
 
 GOVERNANCE_PROMPT = (
     "Resolve a new user fact against same-subject candidates. First compare applicability: "
     "business labels are semantic scenario tags; different strings can mean the same scenario. "
+    "A FUTURE applicability rule is ADD with its future condition; do not immediately "
+    "supersede a rule still valid before that start. "
     "Only compare facts with equivalent actual conditions. Different projects, a project-limited "
     "rule versus a general rule, or genuinely different business scenarios are ADD, never "
     "DUPLICATE, SUPERSEDE or DISPUTE. Preserve project conditions from memory text and "
@@ -128,22 +136,27 @@ GOVERNANCE_PROMPT = (
     "ical_before_id:string|null}. "
     "ADD has no IDs. DUPLICATE has exactly one active ID and requires identical durable meaning "
     "and temporal applicability, not mere similarity. When supplied, "
-    "candidate.explicit_expired_at is the stated temporal boundary; "
+    "candidate.explicit_expired_at is an explicit MEMORY retention deadline; "
     "candidate.expired_at may instead be a system TTL and must not prevent DUPLICATE solely "
-    "because the incoming fact has no stated deadline. Historical intervals that do not overlap "
-    "are ADD, not conflict or duplicate. SUPERSEDE requires explicit user correction, "
+    "because the incoming fact has no stated deadline. Event dates and applicability periods "
+    "are in memory text; distinct historical experiences can coexist. SUPERSEDE requires "
+    "explicit user correction, refinement, cancellation, "
     "current-state "
     "update, or clarification, with a verbatim target USER quote and its ID. It replaces an old "
-    "current-state assertion, not unrelated, complementary or historical facts. A "
+    "assertion about the SAME event/state, including correction of historical content, "
+    "not independent experiences. A "
     "disputed candidate "
     "can only be superseded by explicit clarification; include all members of that conflict group. "
     "Action must match fact.change_kind: none forbids SUPERSEDE. A different birthday with "
     "change_kind=none is DISPUTE, not an implicit correction or update. "
-    "Never prefer a statement just because it arrived later; compare occurred_at and effective_at. "
+    "Compare source_occurred_at and target occurred_at for statement order, never effective_at "
+    "or received_at. Equal times use original source statement_order (batch/phase/position), "
+    "not the batch in which an old source was resubmitted. Unknown dates cannot prove "
+    "recency; a known current user may explicitly correct an unknown-date old assertion. "
     "For a delayed current-state assertion about the SAME attribute that predates a "
     "newer candidate, "
-    "use ADD and set historical_before_id to that newer ID. This bounds the delayed assertion "
-    "as history, never as another unbounded current state. Use "
+    "use ADD with historical_before_id referencing that newer ID. The worker records the "
+    "past declaration and its boundary in text, with receipt-based retention. Use "
     "historical_before_id=null otherwise. "
     "Use DISPUTE for contradictory claims when time or authority cannot resolve them; include "
     "all affected same-scope candidates. Use only supplied IDs. Disputed candidates must never "
@@ -158,6 +171,9 @@ APPLICABILITY_PROMPT = (
     "query identifies that same project/context. Never broaden it because project IDs are null. "
     "Different projects or genuinely different scenarios must be excluded. A relevant "
     "general user fact can apply across scenarios. Do not select merely because topics overlap. "
+    "Check event dates and business start/end conditions against current_time (Beijing). "
+    "A retained past plan is not evidence it happened or is still pending. Past experiences "
+    "may answer historical queries but cannot become current facts. "
     "Return JSON {memory_ids:[string]} using only supplied candidate IDs."
 )
 
@@ -177,6 +193,9 @@ TASK_APPLICABILITY_PROMPT = (
     "their full conditional text. Exclude clear mismatches. A more specific conflicting rule "
     "takes precedence only when the query explicitly satisfies its condition; keep unrelated "
     "requirements from a general memory. Do not change memory state. "
+    "Check temporal conditions against supplied current_time (Beijing), independently of "
+    "memory TTL. Past plans never imply execution or an upcoming event; keep past experiences "
+    "for historical queries without treating them as current state. "
     "Return JSON {decisions:[{id:string,include:boolean,reason:string}]} with exactly one "
     "decision per supplied candidate. Order included decisions by task relevance and applicable "
     "specificity. Use only supplied IDs."
@@ -255,16 +274,10 @@ class ExtractedFact(BaseModel):
             self.project_context = self.project_context.strip()
             if self.project_context not in self.memory:
                 raise ValueError("memory text must preserve project_context")
-        if self.effective_at and self.expired_at and self.expired_at <= self.effective_at:
-            raise ValueError("expired_at must be after effective_at")
         return self
 
 
 def candidate_skip_reason(fact: ExtractedFact) -> str | None:
-    if fact.temporal_kind == "historical" and (
-        fact.effective_at is None or fact.expired_at is None
-    ):
-        return "TIME_UNRESOLVED"
     return None
 
 
@@ -274,6 +287,10 @@ class ExtractionAssessment(BaseModel):
     message_id: str
     outcome: Literal["evaluated", "no_durable_value", "context_insufficient"]
     reason: str = Field(min_length=1, max_length=512)
+    reason_code: Literal[
+        "MISSING_REFERENT", "MISSING_DATE_ANCHOR", "CONTEXT_BUDGET_EXCEEDED",
+        "UNKNOWN_STATEMENT_ORDER",
+    ] | None = None
 
 
 class ExtractionOutput(BaseModel):
@@ -405,18 +422,23 @@ class QwenFactModel:
         return self.extract_with_outcomes(targets=targets, history=history).facts
 
     def extract_with_outcomes(
-        self, *, targets: list[dict[str, Any]], history: list[dict[str, Any]]
+        self, *, targets: list[dict[str, Any]], history: list[dict[str, Any]],
+        related_memories: list[dict[str, Any]] | None = None,
     ) -> ExtractionOutput:
         try:
             def model_messages(messages):
                 return [
-                    {**message, "occurred_at": None}
-                    if message.get("timestamp_origin") == "adapter_observed" else message
+                    {key: value for key, value in {**message, "occurred_at": None}.items()
+                     if key != "received_at"}
+                    if message.get("timestamp_origin") == "adapter_observed" or
+                    message.get("occurred_at") is None else message
                     for message in messages
                 ]
 
             raw = self._json_completion(EXTRACTION_PROMPT, {
                 "history": model_messages(history), "targets": model_messages(targets),
+                **({"related_memories": related_memories} if related_memories else {}),
+                "timezone": "Asia/Shanghai",
             })
             required = {
                 "business_domains",
@@ -437,14 +459,17 @@ class QwenFactModel:
             raise ProviderError(f"invalid extraction output: {exc}") from exc
         validate_fact_evidence(output.facts, targets, history)
         user_ids = {m["message_id"] for m in targets if m["role"] == "user"}
-        if "assessments" in raw:
-            ids = [a.message_id for a in output.assessments]
-            if set(ids) != user_ids or len(ids) != len(set(ids)):
-                raise ProviderError("assessments must cover every target user exactly once")
-            cited_ids = {mid for fact in output.facts for mid in fact.message_ids}
-            for assessment in output.assessments:
-                if assessment.outcome == "no_durable_value" and assessment.message_id in cited_ids:
-                    raise ProviderError("no_durable_value contradicts extracted facts")
+        ids = [a.message_id for a in output.assessments]
+        if "assessments" not in raw or set(ids) != user_ids or len(ids) != len(set(ids)):
+            raise ProviderError("assessments must cover every target user exactly once")
+        cited_ids = {mid for fact in output.facts for mid in fact.message_ids}
+        for assessment in output.assessments:
+            if assessment.outcome == "no_durable_value" and assessment.message_id in cited_ids:
+                raise ProviderError("no_durable_value contradicts extracted facts")
+            if assessment.outcome == "evaluated" and assessment.message_id not in cited_ids:
+                raise ProviderError("evaluated assessment must have an extracted fact")
+            if assessment.outcome == "context_insufficient" and assessment.reason_code is None:
+                assessment.reason_code = "MISSING_REFERENT"
         return output
 
     def select_applicable(
@@ -456,6 +481,7 @@ class QwenFactModel:
                     APPLICABILITY_PROMPT,
                     {
                         "query": query,
+                        "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
                         "business_domain": business_domain,
                         "candidates": candidates,
                     },
@@ -481,7 +507,9 @@ class QwenFactModel:
 
     def select_for_query(self, *, query: str, candidates: list[dict[str, Any]]):
         raw = self._json_completion(
-            TASK_APPLICABILITY_PROMPT, {"query": query, "candidates": candidates}
+            TASK_APPLICABILITY_PROMPT, {"query": query, "candidates": candidates,
+                                       "current_time": datetime.now(
+                                           ZoneInfo("Asia/Shanghai")).isoformat()}
         )
         decisions = raw.get("decisions")
         if not isinstance(decisions, list) or len(decisions) != len(candidates):

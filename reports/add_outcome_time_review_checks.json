@@ -1,0 +1,153 @@
+{
+  "method": "Local code-path probes with synthetic inputs and stub completion/session; no model request or database access",
+  "findings": [
+    {
+      "check": "expired_replacement_masks_superseded",
+      "evidence": [
+        {
+          "message_id": "m",
+          "start_char": 0,
+          "end_char": 23,
+          "outcome": "historical",
+          "memory_ids": [
+            "new"
+          ]
+        }
+      ]
+    },
+    {
+      "check": "mixed_message_results_have_same_slice_range",
+      "evidence": [
+        {
+          "message_id": "m",
+          "start_char": 0,
+          "end_char": 23,
+          "outcome": "superseded",
+          "memory_ids": [
+            "new"
+          ]
+        },
+        {
+          "message_id": "m",
+          "start_char": 0,
+          "end_char": 23,
+          "outcome": "context_insufficient",
+          "reason": "另一陈述缺少指代"
+        }
+      ]
+    },
+    {
+      "check": "missing_assessments_is_accepted",
+      "evidence": [
+        {
+          "message_id": "m",
+          "start_char": 0,
+          "end_char": 23,
+          "outcome": "evaluated_no_fact"
+        }
+      ]
+    },
+    {
+      "check": "evaluated_empty_has_no_classified_reason",
+      "evidence": [
+        {
+          "message_id": "m",
+          "start_char": 0,
+          "end_char": 23,
+          "outcome": "evaluated_no_fact"
+        }
+      ]
+    },
+    {
+      "check": "historical_without_full_interval_skipped",
+      "evidence": "TIME_UNRESOLVED"
+    },
+    {
+      "check": "cancelling_future_effective_plan_rejected",
+      "evidence": "state update cannot move backwards in time"
+    },
+    {
+      "check": "expiry_before_fallback_effective_time_passes_fact_schema",
+      "evidence": {
+        "expired_at": "2026-10-12T00:00:00+00:00",
+        "fallback_effective_at": "2026-10-13T10:00:00+08:00"
+      }
+    },
+    {
+      "check": "implicit_referent_outside_window_is_lost",
+      "evidence": [
+        "other-14",
+        "other-15",
+        "other-16",
+        "other-17",
+        "other-18",
+        "other-19",
+        "other-20",
+        "other-21",
+        "other-22",
+        "other-23",
+        "other-24",
+        "other-25",
+        "other-26",
+        "other-27",
+        "other-28",
+        "other-29",
+        "other-30"
+      ]
+    },
+    {
+      "check": "oversized_dependency_blocks_independent_fact_in_same_message",
+      "evidence": "CONTEXT_BUDGET_EXCEEDED"
+    },
+    {
+      "check": "changing_generated_timestamp_changes_idempotency_fingerprint",
+      "evidence": true
+    },
+    {
+      "check": "current_timestamp_formats",
+      "evidence": [
+        {
+          "input": "omitted",
+          "accepted": false
+        },
+        {
+          "input": "ISO8601",
+          "accepted": true,
+          "normalized": "2026-10-13T10:00:00+08:00"
+        },
+        {
+          "input": "space_with_offset",
+          "accepted": true,
+          "normalized": "2026-10-13T10:00:00+08:00"
+        },
+        {
+          "input": "local_without_zone",
+          "accepted": false
+        },
+        {
+          "input": "date_only",
+          "accepted": false
+        },
+        {
+          "input": "unix_seconds",
+          "accepted": true,
+          "normalized": "2026-10-13T02:00:00+00:00"
+        },
+        {
+          "input": "unix_milliseconds",
+          "accepted": true,
+          "normalized": "2026-10-13T02:00:00+00:00"
+        },
+        {
+          "input": "Chinese",
+          "accepted": false
+        },
+        {
+          "input": "relative",
+          "accepted": false
+        }
+      ]
+    }
+  ],
+  "existing_tests": "tests/test_extraction_input.py and tests/test_providers.py: 30 passed"
+}

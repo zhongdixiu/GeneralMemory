@@ -18,7 +18,14 @@ def _model(monkeypatch, facts, *, complete=True):
             for f in facts
         ]
     model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
-    monkeypatch.setattr(model, "_json_completion", lambda *args: {"facts": facts})
+    def completion(prompt, payload):
+        cited = {mid for fact in facts for mid in fact["message_ids"]}
+        return {"facts": facts, "assessments": [
+            {"message_id": m["message_id"],
+             "outcome": "evaluated" if m["message_id"] in cited else "no_durable_value",
+             "reason": "已评估"} for m in payload["targets"] if m["role"] == "user"
+        ]}
+    monkeypatch.setattr(model, "_json_completion", completion)
     return model
 
 
@@ -113,10 +120,9 @@ def test_business_domains_normalize_and_source_does_not_set_scope():
     "values",
     [
         {"effective_at": "2026-09-27T00:00:00"},
-        {"effective_at": "2026-09-27T00:00:00Z", "expired_at": "2026-09-26T00:00:00Z"},
     ],
 )
-def test_fact_time_requires_timezone_and_valid_interval(values):
+def test_fact_time_requires_timezone(values):
     with pytest.raises(ValidationError):
         ExtractedFact(memory="历史事实", message_ids=["user"], **values)
 
@@ -215,3 +221,39 @@ def test_observation_timestamp_is_hidden_from_extraction_model(monkeypatch):
               "occurred_at": "2026-10-12T09:00:00+08:00", "timestamp_origin": "adapter_observed"}
     model.extract_with_outcomes(targets=[target], history=[])
     assert target["occurred_at"] == "2026-10-12T09:00:00+08:00"
+
+
+@pytest.mark.parametrize("raw", [
+    {"facts": []},
+    {"facts": [], "assessments": [{"message_id": "m", "outcome": "evaluated", "reason": "已评估"}]},
+])
+def test_production_extractor_rejects_unclassified_empty_output(monkeypatch, raw):
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    monkeypatch.setattr(model, "_json_completion", lambda *args: raw)
+    with pytest.raises(ProviderError):
+        model.extract_with_outcomes(targets=[{"message_id": "m", "role": "user"}], history=[])
+
+
+def test_applicability_receives_beijing_clock(monkeypatch):
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    def completion(prompt, payload):
+        assert payload["current_time"].endswith("+08:00")
+        return {"decisions": []}
+    monkeypatch.setattr(model, "_json_completion", completion)
+    assert model.select_for_query(query="今天的安排", candidates=[]) == []
+
+
+def test_unknown_targets_never_expose_receipt_as_a_date_anchor(monkeypatch):
+    model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
+    def completion(prompt, payload):
+        assert payload["targets"][0]["occurred_at"] is None
+        assert "received_at" not in payload["targets"][0]
+        return {"facts": [], "assessments": [{"message_id": "m",
+            "outcome": "context_insufficient", "reason": "原来源日期未知",
+            "reason_code": "MISSING_DATE_ANCHOR"}]}
+    monkeypatch.setattr(model, "_json_completion", completion)
+    output = model.extract_with_outcomes(targets=[{"message_id": "m", "role": "user",
+        "content": "这周六去动物园", "occurred_at": None,
+        "received_at": "2026-10-13T09:00:00+08:00", "timestamp_origin": "adapter_observed"}],
+        history=[])
+    assert not output.facts and output.assessments[0].reason_code == "MISSING_DATE_ANCHOR"

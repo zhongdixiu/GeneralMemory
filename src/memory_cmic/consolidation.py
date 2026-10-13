@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal, Protocol
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
@@ -36,6 +37,7 @@ from memory_cmic.task_queue import (
     finish_exhausted_leases,
     finish_task,
 )
+from memory_cmic.ttl import explicit_expired_at
 from memory_cmic.worker import LeaseLostError, _lease_heartbeat, _leased_task
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,11 @@ PROMPT = (
     "invalidations:[{memory_id,source_id,quote,reason}], "
     "suspicions:[{memory_id,reason}]}. Spell these common keys exactly; phase-specific keys "
     "are described below. "
+    "temporal_kind describes content, not expiration. Event periods are in text; "
+    "effective_at/expired_at are storage availability/retention only. Never infer current "
+    "state or habits from historical experiences or expired business conditions. "
+    "Compare source statement timestamps, not memory effective_at, for corrections. "
+    "Use current_time (Beijing) to check business start/end conditions. "
     "Empty arrays are valid."
     " Obey phase: facts permits merges/invalidations/suspicions only; inference permits "
     "inferences and inference_reviews only, using the freshly supplied facts. "
@@ -214,6 +221,10 @@ def _scope_key(memory: MemoryItem, aliases: dict[str, str] | None = None) -> tup
 
 
 def _same_interval(left: MemoryItem, right: MemoryItem) -> bool:
+    lmeta, rmeta = left.metadata_json or {}, right.metadata_json or {}
+    if lmeta.get("time_semantics_version", 2) >= 3 and rmeta.get("time_semantics_version", 2) >= 3:
+        return (lmeta.get("temporal_kind", "current") == rmeta.get("temporal_kind", "current")
+                and explicit_expired_at(left) == explicit_expired_at(right))
     if left.expired_at != right.expired_at:
         return False
     if (left.metadata_json or {}).get("temporal_kind") == "historical":
@@ -238,6 +249,8 @@ def _scope_memories(session: Session, anchor: MemoryItem) -> list[MemoryItem]:
             )
         )
         if _scope_key(value, aliases) == _scope_key(anchor, aliases)
+        and (value.metadata_json or {}).get("temporal_kind", "current") == (
+            anchor.metadata_json or {}).get("temporal_kind", "current")
         and memory_has_valid_evidence(
             session, value, tenant_id=anchor.tenant_id, user_id=anchor.subject_id, now=now
         )
@@ -359,6 +372,7 @@ def _payload(
     ).all()
     payload = {
         "phase": "facts",
+        "current_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "anchor_id": anchor.id,
         "scenes": [
             {"name": scene.name, "definition": scene.definition, "aliases": scene.aliases}
@@ -370,6 +384,7 @@ def _payload(
             {
                 "id": m.id,
                 "status": m.status,
+                "temporal_kind": (m.metadata_json or {}).get("temporal_kind", "current"),
                 "conflict_group_id": m.conflict_group_id,
                 "content": m.content,
                 "effective_at": m.effective_at.isoformat(),
@@ -381,7 +396,9 @@ def _payload(
                     {
                         "id": s.id,
                         "text": s.raw_content,
-                        "occurred_at": s.occurred_at.isoformat(),
+                        "occurred_at": (s.occurred_at.isoformat() if s.occurred_at and
+                                        (s.metadata_json or {}).get("timestamp_origin") !=
+                                        "adapter_observed" else None),
                     }
                     for s in _valid_sources(session, edges[m.id])[:2]
                 ],
@@ -654,6 +671,17 @@ def _infer(
         if old_bases == {m.id for m in bases}:
             return None
     first = bases[0]
+    statement_times = []
+    for base in bases:
+        metadata = base.metadata_json or {}
+        value = metadata.get("source_occurred_at")
+        if metadata.get("timestamp_origin") == "adapter_observed" or (
+            value is None and metadata.get("time_semantics_version", 2) >= 3
+        ):
+            statement_times = []
+            break
+        statement_times.append(datetime.fromisoformat(value) if value else base.effective_at)
+    source_time = max(statement_times).isoformat() if statement_times else None
     expiries = [m.expired_at for m in bases if m.expired_at is not None]
     inference = MemoryItem(
         id=f"gin_{uuid4().hex}",
@@ -673,6 +701,9 @@ def _infer(
         metadata_json={
             "project_context": (first.metadata_json or {}).get("project_context"),
             "governance_reason": proposal.reason,
+            "time_semantics_version": 3,
+            "source_occurred_at": source_time,
+            "timestamp_origin": "source" if source_time else "adapter_observed",
         },
         created_by="memory_cmic_governance",
     )
@@ -750,7 +781,7 @@ def _invalidate(
         or source.author_type != "user"
         or source.status != "active"
         or proposal.quote not in source.raw_content
-        or source.occurred_at <= target.effective_at
+        or not _source_follows_memory(source, target)
     ):
         return None
     # The cited correction must already support another current memory in this scope.
@@ -905,14 +936,16 @@ def _apply_conflict_review(
                 }
             ):
                 raise ProviderError("conflict resolution cites invalid user evidence")
-            if outcome == "resolved" and any(source.occurred_at <= m.effective_at for m in members):
+            if outcome == "resolved" and any(
+                not _source_follows_memory(source, m) for m in members
+            ):
                 # A newer claim alone still needs semantic clarification, enforced in the prompt.
                 raise ProviderError("conflict clarification must follow all disputed assertions")
             if outcome == "resolved" and any(_scope_key(m) != _scope_key(basis) for m in members):
                 raise ProviderError("conflict clarification cannot replace unrelated scopes")
             if not _eligible_interval(basis):
                 raise ProviderError(
-                    "conflict resolution cannot restore expired or historical facts"
+                    "conflict resolution cannot restore unavailable facts"
                 )
             prepared.append((proposal, basis, source))
         if outcome == "conditions_distinguished" and not {m.id for _, m, _ in prepared}.issuperset(
@@ -930,10 +963,15 @@ def _apply_conflict_review(
                 content=proposal.content,
                 business_domains=basis.business_domains,
                 project_domains=basis.project_domains,
-                effective_at=(source.occurred_at if outcome == "resolved" else basis.effective_at),
+                effective_at=(max(source.received_at, basis.effective_at)
+                              if outcome == "resolved" else basis.effective_at),
                 expired_at=basis.expired_at,
                 metadata_json={
                     **(basis.metadata_json or {}),
+                    "source_occurred_at": source.occurred_at.isoformat()
+                    if source.occurred_at else None,
+                    "timestamp_origin": (source.metadata_json or {}).get(
+                        "timestamp_origin", "source"),
                     "governance_action": "CLARIFY",
                     "previous_memory_ids": [m.id for m in members],
                 },
@@ -1004,12 +1042,26 @@ def _apply_conflict_review(
     return {"kind": "conflict_review", "operation_id": op.id, **details}
 
 
+def _source_follows_memory(
+    source: SourceRecord, memory: MemoryItem, *, strict: bool = True
+) -> bool:
+    metadata = memory.metadata_json or {}
+    if source.occurred_at is None or (source.metadata_json or {}).get(
+        "timestamp_origin") == "adapter_observed" or metadata.get(
+            "timestamp_origin") == "adapter_observed":
+        return False
+    value = metadata.get("source_occurred_at")
+    if value is None and metadata.get("time_semantics_version", 2) >= 3:
+        return False
+    prior = datetime.fromisoformat(value) if value else memory.effective_at
+    return source.occurred_at > prior if strict else source.occurred_at >= prior
+
+
 def _eligible_interval(memory: MemoryItem) -> bool:
     now = datetime.now(UTC)
     return (
         memory.effective_at <= now
         and (memory.expired_at is None or memory.expired_at > now)
-        and (memory.metadata_json or {}).get("temporal_kind", "current") != "historical"
     )
 
 
@@ -1146,7 +1198,7 @@ def _review_inference(session, task, proposal, existing, available, edges):
         or source.status != "active"
         or not proposal.quote
         or proposal.quote not in source.raw_content
-        or source.occurred_at < inference.effective_at
+        or not _source_follows_memory(source, inference, strict=False)
         or not any(
             source.id in {s.id for s in _valid_sources(session, edges[m.id])}
             for m in available.values()
@@ -1259,6 +1311,9 @@ def _process_anchor(
                 or not _eligible_interval(anchor)
             ):
                 return "skip", results
+            if (phase == "inference" and (anchor.metadata_json or {}).get(
+                    "temporal_kind") == "historical"):
+                continue
             memories = _scope_memories(session, anchor)
             existing = _scope_inferences(session, anchor) if phase == "inference" else []
             if len(memories) < 2 and not existing:

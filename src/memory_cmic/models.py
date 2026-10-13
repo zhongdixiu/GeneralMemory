@@ -28,6 +28,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import func
 
 
+def _default_agent_id(context) -> str | None:
+    return context.get_current_parameters().get("caller_agent_id")
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -76,6 +80,7 @@ class SourceRecord(Base):
             "session_id",
             "message_id",
             "caller_agent_id",
+            "agent_id",
             name="uq_source_record_message",
         ),
         CheckConstraint("version > 0", name="ck_source_record_version_positive"),
@@ -101,6 +106,7 @@ class SourceRecord(Base):
     session_id: Mapped[str | None] = mapped_column(String(128))
     message_id: Mapped[str | None] = mapped_column(String(256))
     caller_agent_id: Mapped[str | None] = mapped_column(String(128))
+    agent_id: Mapped[str | None] = mapped_column(String(128), default=_default_agent_id)
     external_ref_id: Mapped[str] = mapped_column(String(128), nullable=False)
     author_type: Mapped[str] = mapped_column(String(32), nullable=False)
     author_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -113,7 +119,10 @@ class SourceRecord(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     processed_version: Mapped[int | None] = mapped_column(Integer)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
@@ -135,6 +144,7 @@ Index(
     SourceRecord.tenant_id,
     SourceRecord.source_system,
     SourceRecord.caller_agent_id,
+    SourceRecord.agent_id,
     SourceRecord.user_id,
     SourceRecord.session_id,
 )
@@ -144,7 +154,7 @@ class ConversationSession(Base):
     __tablename__ = "conversation_session"
     __table_args__ = (
         PrimaryKeyConstraint(
-            "tenant_id", "caller_agent_id", "source_system", "user_id", "session_id",
+            "tenant_id", "caller_agent_id", "agent_id", "source_system", "user_id", "session_id",
             name="pk_conversation_session"
         ),
         CheckConstraint("next_batch_seq > 0", name="ck_conversation_next_batch_seq_positive"),
@@ -152,6 +162,9 @@ class ConversationSession(Base):
 
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     caller_agent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    agent_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=_default_agent_id
+    )
     source_system: Mapped[str] = mapped_column(String(64), nullable=False)
     session_id: Mapped[str] = mapped_column(String(128), nullable=False)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -479,6 +492,7 @@ class MemoryTask(Base):
         UniqueConstraint(
             "tenant_id",
             "caller_agent_id",
+            "agent_id",
             "idempotency_key",
             "user_id",
             name="uq_memory_task_idempotency",
@@ -513,6 +527,7 @@ class MemoryTask(Base):
     target_id: Mapped[str] = mapped_column(String(128), nullable=False)
     input_version: Mapped[int | None] = mapped_column(Integer)
     caller_agent_id: Mapped[str | None] = mapped_column(String(128))
+    agent_id: Mapped[str | None] = mapped_column(String(128), default=_default_agent_id)
     idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
     request_fingerprint: Mapped[str | None] = mapped_column(String(64))
     correlation_id: Mapped[str | None] = mapped_column(String(64))
@@ -563,6 +578,7 @@ Index(
     MemoryTask.tenant_id,
     MemoryTask.source_system,
     MemoryTask.caller_agent_id,
+    MemoryTask.agent_id,
     MemoryTask.user_id,
     MemoryTask.session_id,
     MemoryTask.batch_seq,

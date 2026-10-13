@@ -5,8 +5,9 @@ import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 def _json_size(value: Any) -> int:
@@ -74,11 +75,21 @@ class Message(StrictRequestModel):
     message_id: str = Field(min_length=1, max_length=256)
     role: Literal["user", "assistant", "tool", "system"]
     content: str
-    occurred_at: datetime
+    occurred_at: datetime | None = None
     author_id: str | None = Field(default=None, min_length=1, max_length=128)
     turn_id: str | None = Field(default=None, min_length=1, max_length=128)
     reply_to_message_id: str | None = Field(default=None, min_length=1, max_length=256)
     metadata: MessageMetadata = Field(default_factory=MessageMetadata)
+    _occurred_at_input: str | int | float | None = PrivateAttr(default=None)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def preserve_time_input(cls, data, handler):
+        message = handler(data)
+        if isinstance(data, dict):
+            raw = data.get("occurred_at")
+            message._occurred_at_input = raw.isoformat() if isinstance(raw, datetime) else raw
+        return message
 
     @field_validator("content")
     @classmethod
@@ -87,11 +98,20 @@ class Message(StrictRequestModel):
             raise ValueError("content exceeds 64 KiB")
         return value
 
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def reject_date_only(cls, value):
+        if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
+            raise ValueError("occurred_at requires a full date and time")
+        return value
+
     @field_validator("occurred_at")
     @classmethod
-    def validate_occurred_at(cls, value: datetime) -> datetime:
+    def validate_occurred_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("occurred_at must include a timezone")
+            return value.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
         return value
 
     @model_validator(mode="after")
@@ -118,6 +138,7 @@ class Message(StrictRequestModel):
 
 
 class AddRequest(StrictRequestModel):
+    agent_id: str | None = Field(default=None, min_length=1, max_length=128)
     source_system: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=128)
     session_id: str = Field(min_length=1, max_length=128)
@@ -125,6 +146,13 @@ class AddRequest(StrictRequestModel):
     history_messages: list[Message] = Field(default_factory=list, max_length=100)
     wait_for_result: bool = False
     wait_timeout_ms: int | None = Field(default=None, ge=1, le=30_000)
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("agent_id must not be blank")
+        return value
 
     @model_validator(mode="after")
     def validate_request(self):
@@ -137,9 +165,9 @@ class AddRequest(StrictRequestModel):
             if message.role == "user" and message.author_id not in {None, self.user_id}:
                 raise ValueError("user message author_id must equal user_id")
         source_history = [m for m in self.history_messages
-                          if m.metadata.timestamp_origin == "source"]
+                          if m.metadata.timestamp_origin == "source" and m.occurred_at]
         source_targets = [m for m in self.messages
-                          if m.metadata.timestamp_origin == "source"]
+                          if m.metadata.timestamp_origin == "source" and m.occurred_at]
         if source_history and source_targets:
             latest_history = max(message.occurred_at for message in source_history)
             earliest_target = min(message.occurred_at for message in source_targets)
@@ -177,6 +205,9 @@ class ProcessingResult(BaseModel):
     ]
     memory_ids: list[str] = Field(default_factory=list)
     reason: str | None = None
+    reason_code: str | None = None
+    temporal_kind: Literal["current", "historical"] | None = None
+    memory_status: Literal["active", "invalidated", "disputed", "expired"] | None = None
 
 
 class SearchRequest(StrictRequestModel):

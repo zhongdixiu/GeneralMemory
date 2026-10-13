@@ -22,7 +22,7 @@
 - 保留现有 StaticCredentialStore：凭证固定 tenant_id、caller_agent_id；Add 的来源允许列表和管理权限继续执行。
 - user_id 暂由受信任的接入后端提供，尚未与公司登录用户核验。普通请求不接受客户端自行选择其他租户；当前租户来自静态凭证。
 - 后续 Search、Profile 按凭证租户和请求指定用户限定个人记忆，默认可读取同用户来自不同 Agent 的有效记忆；不能因为共享而扩大到其他用户、Agent 自身记忆或未经授权的组织记忆。
-- 当前 Search 支持可选 agent_id、source_system 来源过滤，不据此授予权限，也不增加 session_id。agent_id 匹配来源当前版本的可追溯提交及可信来源 Agent，Add 核心升级后的完整证据组可包含同 Agent 的必要 history 来源，该值由服务凭证确定；不使用 created_by 或消息作者猜测来源 Agent。事实和推断都须有至少一组完整有效依据全部落在筛选范围，详见接口运行说明。上述自报 Agent 的约定属于后续公司用户凭证方案，不能替代当前可信接入记录。
+- 当前 Search 支持可选 agent_id、source_system 来源过滤，不据此授予权限，也不增加 session_id。agent_id 匹配来源当前版本的可追溯提交及来源 agent_id，Add 核心升级后的完整证据组可包含同 Agent 的必要 history 来源，该值可由 Add 自报，省略时取凭证 caller_agent_id；不使用 created_by 或消息作者猜测来源 Agent。事实和推断都须有至少一组完整有效依据全部落在筛选范围，详见接口运行说明。可信调用身份仍保存在 caller_agent_id，自报来源不能替代凭证身份。
 - 现有 Add 和任务查询行为本轮不变：任务回执仍按租户、调用 Agent 检查。改为同用户跨 Agent 查询回执的代码调整尚未实施，不把它作为已有能力。
 - 临时方式仅用于受信任后端接入与联调。它能够验证指定用户的跨 Agent 共享，不能证明实际调用者就是该用户；公司鉴权接入前，不能宣称已具备登录用户级访问保护。
 - 不因暂缓公司鉴权而移除现有认证、接收任意自报租户或开放管理接口。当前普通入口不新增公司凭证模拟协议或 Agent 授权框架。
@@ -51,9 +51,9 @@
 | 范围 | 现状 | 改造目标 |
 | --- | --- | --- |
 | auth.py、settings.py | 静态服务 token 映射租户、Agent 和权限，没有当前用户身份 | 接入公司 token 验证；普通请求取得可信 user_id 及经过确定/核验的租户；Agent 保留来源语义 |
-| api_schemas.py、api.py | Add 的 user_id 由正文提供，Agent 由服务凭证提供 | 明确来源 Agent 的传递方式；保留现有 user_id 时必须与认证结果一致；在接入及幂等重放前完成检查 |
+| api_schemas.py、api.py | Add 的 user_id 由正文提供，来源 agent_id 可自报，caller_agent_id 由服务凭证提供 | 明确来源 Agent 的传递方式；保留现有 user_id 时必须与认证结果一致；在接入及幂等重放前完成检查 |
 | api.py 的任务查询 | 按 tenant_id、caller_agent_id 限制 | 用户入口按 tenant_id、已认证 user_id 及可公开的任务类别限制；不同 Agent 可读取同用户的 Add 回执，不能因此开放内部治理任务 |
-| ingest.py 的来源记录 | 用户消息的 author_id 是用户，source_system 是来源系统；接入 Agent 未独立记录在每条来源上 | 明确记录来源的接入 Agent；不能把消息作者或 source_system 自动当成接入 Agent；同一来源被重复接入时不能覆盖原始来源信息 |
+| ingest.py 的来源记录 | 用户消息的 author_id 是用户，source_system 是来源系统；接入来源 agent_id 与凭证 caller_agent_id 分别记录在每条来源上 | 明确记录来源的接入 Agent；不能把消息作者或 source_system 自动当成接入 Agent；同一来源被重复接入时不能覆盖原始来源信息 |
 | ingest.py、models.py 的 Add 幂等 | 范围为 tenant_id、caller_agent_id、Idempotency-Key | 用户请求的幂等身份包含 tenant_id、user_id、来源 Agent、客户端幂等键；查询、锁和唯一性保持一致；兼容已有任务，不统一改写后台任务规则 |
 | retrieval.py、profile.py | 用户记忆和画像已按租户、用户归属 | 复用现有逻辑；未来公开入口只传入经过认证与核验的主体，不接受客户端指定额外授权主体 |
 

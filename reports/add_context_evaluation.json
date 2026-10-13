@@ -1,6 +1,6 @@
 {
-  "prompt_version": "p02-v11-context-evidence",
-  "executed_at": "2026-10-12T07:50:14.120093+00:00",
+  "prompt_version": "p02-v12-receipt-content-time",
+  "executed_at": "2026-10-13T04:22:33.547823+00:00",
   "model": "qwen3.8-max",
   "cases": [
     {
@@ -39,9 +39,9 @@
             "project_limited": false,
             "project_context": null,
             "temporal_kind": "current",
-            "retention_kind": "long_term",
+            "retention_kind": "regular",
             "change_kind": "none",
-            "effective_at": "2026-09-24T01:00:00Z",
+            "effective_at": null,
             "expired_at": null
           }
         ],
@@ -49,7 +49,8 @@
           {
             "message_id": "confirm",
             "outcome": "evaluated",
-            "reason": "User confirmed the proposal to use a three-part format for weekly reports going forward."
+            "reason": "The user confirms the assistant's proposal to use a three-part format for future weekly reports.",
+            "reason_code": null
           }
         ]
       }
@@ -73,7 +74,8 @@
           {
             "message_id": "missing",
             "outcome": "context_insufficient",
-            "reason": "The message '记住这个' lacks any referent or content to remember; no durable fact can be extracted."
+            "reason": "'记住这个' without supporting context lacks a referent to remember.",
+            "reason_code": "MISSING_REFERENT"
           }
         ]
       }
@@ -97,7 +99,8 @@
           {
             "message_id": "observed",
             "outcome": "context_insufficient",
-            "reason": "The message describes a current-week responsibility and a next-week reversion, but occurred_at is null and timestamp_origin is adapter_observed, so the actual event time is unknown; required dates for temporal resolution are missing."
+            "reason": "The message contains temporary responsibilities with relative time references ('本周', '下周') but occurred_at is null, so there is no date anchor to resolve these weeks.",
+            "reason_code": "MISSING_DATE_ANCHOR"
           }
         ]
       }
@@ -127,7 +130,8 @@
           {
             "message_id": "attachment",
             "outcome": "no_durable_value",
-            "reason": "Attachment-only message with no readable content or user-stated facts."
+            "reason": "The message contains only a PDF attachment reference with no readable content or textual statement to extract facts from.",
+            "reason_code": null
           }
         ]
       }

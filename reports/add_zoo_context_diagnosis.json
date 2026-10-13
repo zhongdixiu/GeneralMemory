@@ -1,0 +1,1455 @@
+{
+  "scope": {
+    "tenant_id": "cmic-yun",
+    "caller_agent_id": "email_agent",
+    "user_id": "user_1001",
+    "source_system": "email_agent",
+    "session_id": "session_106"
+  },
+  "tasks": [
+    {
+      "id": "tsk_975432aa0cee4bb181e9283ac8ef840f",
+      "tenant_id": "cmic-yun",
+      "task_type": "fact_extract",
+      "target_type": "batch",
+      "target_id": "batch_55469ee03feb4176a63844a85d37f192",
+      "input_version": null,
+      "idempotency_key": "o",
+      "correlation_id": "813f61a16fa845fe8409213821412ac7",
+      "payload": {
+        "execution": {
+          "input": {
+            "history": [
+              {
+                "role": "user",
+                "content": "我不喜欢吃年糕",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_115",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我不喜欢吃年糕",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_119",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我喜欢波斯猫",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_120",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我最喜欢吃米粉了，是真的好吃",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_13",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_124",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              }
+            ],
+            "targets": [
+              {
+                "role": "user",
+                "content": "我周末准备带儿子去动物园玩一天",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_125",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-13T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              }
+            ],
+            "task_id": "tsk_975432aa0cee4bb181e9283ac8ef840f",
+            "user_id": "user_1001",
+            "batch_seq": 11,
+            "tenant_id": "cmic-yun",
+            "session_id": "session_106",
+            "source_ids": {
+              "msg_13": "src_409f4e73da304f77bee1ad76ecf7eccb",
+              "msg_115": "src_a74a1ceeedb543c4b0771ffb907936f0",
+              "msg_119": "src_eb79ded587f84da18d7408b4968d4fd7",
+              "msg_120": "src_26db6202e6c74bcfbfb909af3d62001e",
+              "msg_124": "src_b235457fad1c4de189e13a02f9d7a57e",
+              "msg_125": "src_adc64234189244f89302e88f2b17c55f"
+            },
+            "associations": [
+              [
+                "src_adc64234189244f89302e88f2b17c55f",
+                "target",
+                0,
+                1
+              ]
+            ],
+            "source_states": {
+              "src_26db6202e6c74bcfbfb909af3d62001e": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我喜欢波斯猫",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_120",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_409f4e73da304f77bee1ad76ecf7eccb": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我最喜欢吃米粉了，是真的好吃",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_13",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_a74a1ceeedb543c4b0771ffb907936f0": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我不喜欢吃年糕",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_115",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_adc64234189244f89302e88f2b17c55f": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我周末准备带儿子去动物园玩一天",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_125",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_b235457fad1c4de189e13a02f9d7a57e": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_124",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_eb79ded587f84da18d7408b4968d4fd7": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我不喜欢吃年糕",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_119",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              }
+            },
+            "source_system": "email_agent",
+            "task_signature": "{\"input_version\": null, \"payload\": {\"config_version\": 2, \"request_id\": \"req_99f1ae2d520d474ba22cddd7cbb25ce1\"}, \"target_id\": \"batch_55469ee03feb4176a63844a85d37f192\", \"target_type\": \"batch\", \"type\": \"fact_extract\"}",
+            "caller_agent_id": "email_agent"
+          },
+          "budget": {
+            "input_tokens": 12000,
+            "output_tokens": 2048,
+            "max_model_calls": 20
+          },
+          "slices": [
+            {
+              "history": [
+                {
+                  "role": "user",
+                  "content": "我不喜欢吃年糕",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_115",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我不喜欢吃年糕",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_119",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我喜欢波斯猫",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_120",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我最喜欢吃米粉了，是真的好吃",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_13",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_124",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                }
+              ],
+              "targets": [
+                {
+                  "role": "user",
+                  "content": "我周末准备带儿子去动物园玩一天",
+                  "turn_id": null,
+                  "end_char": 15,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_125",
+                  "start_char": 0,
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                }
+              ],
+              "split_depth": 0
+            }
+          ],
+          "changed": true,
+          "next_slice": 1,
+          "diagnostics": [],
+          "model_calls": 3,
+          "prompt_version": "p02-v11-context-evidence",
+          "processing_results": [
+            {
+              "outcome": "added",
+              "end_char": 15,
+              "memory_ids": [
+                "mem_da8512395ead46fe81d60232e6c72edb"
+              ],
+              "message_id": "msg_125",
+              "start_char": 0
+            }
+          ]
+        },
+        "request_id": "req_99f1ae2d520d474ba22cddd7cbb25ce1",
+        "config_version": 2
+      },
+      "status": "succeeded",
+      "priority": 50,
+      "attempt_count": 0,
+      "max_attempts": 5,
+      "available_at": "2026-10-13 01:43:42.825118+00:00",
+      "locked_until": "2026-10-13 01:46:43.747422+00:00",
+      "worker_id": "worker_11dd4d39470747cd9186742327774384",
+      "last_error": null,
+      "started_at": "2026-10-13 01:43:43.747422+00:00",
+      "completed_at": "2026-10-13 01:43:50.262937+00:00",
+      "created_at": "2026-10-13 01:43:42.825118+00:00",
+      "updated_at": "2026-10-13 01:43:50.262937+00:00",
+      "caller_agent_id": "email_agent",
+      "request_fingerprint": "81cefc0ff131be37d3ab539d1bb863d4648baf5c5671005aefa088232fbd6ab0",
+      "source_system": "email_agent",
+      "user_id": "user_1001",
+      "session_id": "session_106",
+      "batch_seq": 11,
+      "result": [
+        {
+          "id": "mem_da8512395ead46fe81d60232e6c72edb",
+          "event": "ADD",
+          "memory": "用户周末准备带儿子去动物园玩一天。"
+        }
+      ],
+      "error": null,
+      "lease_token": "f0c551dce62cdacce90178d7775fe421"
+    },
+    {
+      "id": "tsk_f7ba668037834bc5ab0cb4e0bd206673",
+      "tenant_id": "cmic-yun",
+      "task_type": "fact_extract",
+      "target_type": "batch",
+      "target_id": "batch_d3bd7f617fe44739a3a13e10f774ec6d",
+      "input_version": null,
+      "idempotency_key": "u",
+      "correlation_id": "2f95ecce25a04a48a3688cc7274ecdd6",
+      "payload": {
+        "execution": {
+          "input": {
+            "history": [
+              {
+                "role": "user",
+                "content": "我不喜欢吃年糕",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_119",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我喜欢波斯猫",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_120",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我最喜欢吃米粉了，是真的好吃",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_13",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_124",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我周末准备带儿子去动物园玩一天",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_125",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-13T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              }
+            ],
+            "targets": [
+              {
+                "role": "user",
+                "content": "确切的说是这周六",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_126",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-13T10:00:00+09:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              }
+            ],
+            "task_id": "tsk_f7ba668037834bc5ab0cb4e0bd206673",
+            "user_id": "user_1001",
+            "batch_seq": 12,
+            "tenant_id": "cmic-yun",
+            "session_id": "session_106",
+            "source_ids": {
+              "msg_13": "src_409f4e73da304f77bee1ad76ecf7eccb",
+              "msg_119": "src_eb79ded587f84da18d7408b4968d4fd7",
+              "msg_120": "src_26db6202e6c74bcfbfb909af3d62001e",
+              "msg_124": "src_b235457fad1c4de189e13a02f9d7a57e",
+              "msg_125": "src_adc64234189244f89302e88f2b17c55f",
+              "msg_126": "src_67aa2367c6bf483d9dfdb5b85aa74045"
+            },
+            "associations": [
+              [
+                "src_67aa2367c6bf483d9dfdb5b85aa74045",
+                "target",
+                0,
+                1
+              ]
+            ],
+            "source_states": {
+              "src_26db6202e6c74bcfbfb909af3d62001e": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我喜欢波斯猫",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_120",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_409f4e73da304f77bee1ad76ecf7eccb": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我最喜欢吃米粉了，是真的好吃",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_13",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_67aa2367c6bf483d9dfdb5b85aa74045": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "确切的说是这周六",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_126",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+09:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_adc64234189244f89302e88f2b17c55f": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我周末准备带儿子去动物园玩一天",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_125",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_b235457fad1c4de189e13a02f9d7a57e": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_124",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_eb79ded587f84da18d7408b4968d4fd7": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我不喜欢吃年糕",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_119",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              }
+            },
+            "source_system": "email_agent",
+            "task_signature": "{\"input_version\": null, \"payload\": {\"config_version\": 2, \"request_id\": \"req_2f7b765a84e340b88bb57c7098e36f18\"}, \"target_id\": \"batch_d3bd7f617fe44739a3a13e10f774ec6d\", \"target_type\": \"batch\", \"type\": \"fact_extract\"}",
+            "caller_agent_id": "email_agent"
+          },
+          "budget": {
+            "input_tokens": 12000,
+            "output_tokens": 2048,
+            "max_model_calls": 20
+          },
+          "slices": [
+            {
+              "history": [
+                {
+                  "role": "user",
+                  "content": "我不喜欢吃年糕",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_119",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我喜欢波斯猫",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_120",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我最喜欢吃米粉了，是真的好吃",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_13",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_124",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我周末准备带儿子去动物园玩一天",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_125",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                }
+              ],
+              "targets": [
+                {
+                  "role": "user",
+                  "content": "确切的说是这周六",
+                  "turn_id": null,
+                  "end_char": 8,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_126",
+                  "start_char": 0,
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+09:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                }
+              ],
+              "split_depth": 0
+            }
+          ],
+          "changed": false,
+          "next_slice": 1,
+          "diagnostics": [],
+          "model_calls": 1,
+          "prompt_version": "p02-v11-context-evidence",
+          "processing_results": [
+            {
+              "reason": "Clarifies the timing of a one-time weekend plan to an exact day, which is single-task execution detail without durable value.",
+              "outcome": "no_durable_value",
+              "end_char": 8,
+              "message_id": "msg_126",
+              "start_char": 0
+            }
+          ]
+        },
+        "request_id": "req_2f7b765a84e340b88bb57c7098e36f18",
+        "config_version": 2
+      },
+      "status": "succeeded",
+      "priority": 50,
+      "attempt_count": 0,
+      "max_attempts": 5,
+      "available_at": "2026-10-13 01:46:02.555279+00:00",
+      "locked_until": "2026-10-13 01:49:02.645044+00:00",
+      "worker_id": "worker_11dd4d39470747cd9186742327774384",
+      "last_error": null,
+      "started_at": "2026-10-13 01:46:02.645044+00:00",
+      "completed_at": "2026-10-13 01:46:05.071431+00:00",
+      "created_at": "2026-10-13 01:46:02.555279+00:00",
+      "updated_at": "2026-10-13 01:46:05.071431+00:00",
+      "caller_agent_id": "email_agent",
+      "request_fingerprint": "5fc0376e534e415a8d0b16e462efd42613e6a613e3eb1e34b2fd79a94e0909a1",
+      "source_system": "email_agent",
+      "user_id": "user_1001",
+      "session_id": "session_106",
+      "batch_seq": 12,
+      "result": [],
+      "error": null,
+      "lease_token": "2dc874a46adc8460fa3f33a40e61bbaa"
+    },
+    {
+      "id": "tsk_b3a6780d2cf649859713527bf769956d",
+      "tenant_id": "cmic-yun",
+      "task_type": "fact_extract",
+      "target_type": "batch",
+      "target_id": "batch_2ad6ac17f1a642d784e17037438b494e",
+      "input_version": null,
+      "idempotency_key": "f",
+      "correlation_id": "cf0220a2288946738b9f604a927dde38",
+      "payload": {
+        "execution": {
+          "input": {
+            "history": [
+              {
+                "role": "user",
+                "content": "我喜欢波斯猫",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_120",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我最喜欢吃米粉了，是真的好吃",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_13",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_124",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-10T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "我周末准备带儿子去动物园玩一天",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_125",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-13T10:00:00+08:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              },
+              {
+                "role": "user",
+                "content": "确切的说是这周六",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_126",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-13T10:00:00+09:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              }
+            ],
+            "targets": [
+              {
+                "role": "user",
+                "content": "这周末还是不去了，要加班",
+                "turn_id": null,
+                "author_id": "user_1001",
+                "tool_name": null,
+                "message_id": "msg_127",
+                "tool_calls": [],
+                "attachments": [],
+                "occurred_at": "2026-10-13T10:00:00+09:00",
+                "tool_status": null,
+                "tool_call_id": null,
+                "timestamp_origin": "source",
+                "reply_to_message_id": null
+              }
+            ],
+            "task_id": "tsk_b3a6780d2cf649859713527bf769956d",
+            "user_id": "user_1001",
+            "batch_seq": 13,
+            "tenant_id": "cmic-yun",
+            "session_id": "session_106",
+            "source_ids": {
+              "msg_13": "src_409f4e73da304f77bee1ad76ecf7eccb",
+              "msg_120": "src_26db6202e6c74bcfbfb909af3d62001e",
+              "msg_124": "src_b235457fad1c4de189e13a02f9d7a57e",
+              "msg_125": "src_adc64234189244f89302e88f2b17c55f",
+              "msg_126": "src_67aa2367c6bf483d9dfdb5b85aa74045",
+              "msg_127": "src_771f931453a34f24bafe43863283c9e7"
+            },
+            "associations": [
+              [
+                "src_771f931453a34f24bafe43863283c9e7",
+                "target",
+                0,
+                1
+              ]
+            ],
+            "source_states": {
+              "src_26db6202e6c74bcfbfb909af3d62001e": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我喜欢波斯猫",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_120",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_409f4e73da304f77bee1ad76ecf7eccb": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我最喜欢吃米粉了，是真的好吃",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_13",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_67aa2367c6bf483d9dfdb5b85aa74045": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "确切的说是这周六",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_126",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+09:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_771f931453a34f24bafe43863283c9e7": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "这周末还是不去了，要加班",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_127",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+09:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_adc64234189244f89302e88f2b17c55f": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我周末准备带儿子去动物园玩一天",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_125",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              },
+              "src_b235457fad1c4de189e13a02f9d7a57e": {
+                "status": "active",
+                "message": {
+                  "role": "user",
+                  "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_124",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                "version": 1
+              }
+            },
+            "source_system": "email_agent",
+            "task_signature": "{\"input_version\": null, \"payload\": {\"config_version\": 2, \"request_id\": \"req_7c8bf93da5ac4632a24a04e41c0b6717\"}, \"target_id\": \"batch_2ad6ac17f1a642d784e17037438b494e\", \"target_type\": \"batch\", \"type\": \"fact_extract\"}",
+            "caller_agent_id": "email_agent"
+          },
+          "budget": {
+            "input_tokens": 12000,
+            "output_tokens": 2048,
+            "max_model_calls": 20
+          },
+          "slices": [
+            {
+              "history": [
+                {
+                  "role": "user",
+                  "content": "我喜欢波斯猫",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_120",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我最喜欢吃米粉了，是真的好吃",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_13",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我最近心情不好，连听我偶像小王的歌都没法开心",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_124",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-10T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "我周末准备带儿子去动物园玩一天",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_125",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+08:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                },
+                {
+                  "role": "user",
+                  "content": "确切的说是这周六",
+                  "turn_id": null,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_126",
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+09:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                }
+              ],
+              "targets": [
+                {
+                  "role": "user",
+                  "content": "这周末还是不去了，要加班",
+                  "turn_id": null,
+                  "end_char": 12,
+                  "author_id": "user_1001",
+                  "tool_name": null,
+                  "message_id": "msg_127",
+                  "start_char": 0,
+                  "tool_calls": [],
+                  "attachments": [],
+                  "occurred_at": "2026-10-13T10:00:00+09:00",
+                  "tool_status": null,
+                  "tool_call_id": null,
+                  "timestamp_origin": "source",
+                  "reply_to_message_id": null
+                }
+              ],
+              "split_depth": 0
+            }
+          ],
+          "changed": false,
+          "next_slice": 1,
+          "diagnostics": [],
+          "model_calls": 1,
+          "prompt_version": "p02-v11-context-evidence",
+          "processing_results": [
+            {
+              "reason": "Cancelling a one-time weekend plan due to overtime is single-task progress with no durable value.",
+              "outcome": "no_durable_value",
+              "end_char": 12,
+              "message_id": "msg_127",
+              "start_char": 0
+            }
+          ]
+        },
+        "request_id": "req_7c8bf93da5ac4632a24a04e41c0b6717",
+        "config_version": 2
+      },
+      "status": "succeeded",
+      "priority": 50,
+      "attempt_count": 0,
+      "max_attempts": 5,
+      "available_at": "2026-10-13 01:47:32.485150+00:00",
+      "locked_until": "2026-10-13 01:50:33.293891+00:00",
+      "worker_id": "worker_11dd4d39470747cd9186742327774384",
+      "last_error": null,
+      "started_at": "2026-10-13 01:47:33.293891+00:00",
+      "completed_at": "2026-10-13 01:47:35.422352+00:00",
+      "created_at": "2026-10-13 01:47:32.485150+00:00",
+      "updated_at": "2026-10-13 01:47:35.422352+00:00",
+      "caller_agent_id": "email_agent",
+      "request_fingerprint": "35f746ec2b183f8c0b62f3220e389bf9f28aae3b24472eba8ae2ad6fd42e4938",
+      "source_system": "email_agent",
+      "user_id": "user_1001",
+      "session_id": "session_106",
+      "batch_seq": 13,
+      "result": [],
+      "error": null,
+      "lease_token": "df733281b0c7eb392384d53860d78e9a"
+    }
+  ],
+  "sources": [
+    {
+      "id": "src_adc64234189244f89302e88f2b17c55f",
+      "message_id": "msg_125",
+      "raw_content": "我周末准备带儿子去动物园玩一天",
+      "occurred_at": "2026-10-13 02:00:00+00:00",
+      "metadata": {
+        "role": "user",
+        "turn_id": null,
+        "extensions": {},
+        "message_id": "msg_125",
+        "tool_calls": [],
+        "attachments": [],
+        "timestamp_origin": "source",
+        "reply_to_message_id": null,
+        "original_occurred_at": "2026-10-13T10:00:00+08:00"
+      },
+      "status": "active",
+      "version": 1,
+      "processed_version": 1
+    },
+    {
+      "id": "src_67aa2367c6bf483d9dfdb5b85aa74045",
+      "message_id": "msg_126",
+      "raw_content": "确切的说是这周六",
+      "occurred_at": "2026-10-13 01:00:00+00:00",
+      "metadata": {
+        "role": "user",
+        "turn_id": null,
+        "extensions": {},
+        "message_id": "msg_126",
+        "tool_calls": [],
+        "attachments": [],
+        "timestamp_origin": "source",
+        "reply_to_message_id": null,
+        "original_occurred_at": "2026-10-13T10:00:00+09:00"
+      },
+      "status": "active",
+      "version": 1,
+      "processed_version": 1
+    },
+    {
+      "id": "src_771f931453a34f24bafe43863283c9e7",
+      "message_id": "msg_127",
+      "raw_content": "这周末还是不去了，要加班",
+      "occurred_at": "2026-10-13 01:00:00+00:00",
+      "metadata": {
+        "role": "user",
+        "turn_id": null,
+        "extensions": {},
+        "message_id": "msg_127",
+        "tool_calls": [],
+        "attachments": [],
+        "timestamp_origin": "source",
+        "reply_to_message_id": null,
+        "original_occurred_at": "2026-10-13T10:00:00+09:00"
+      },
+      "status": "active",
+      "version": 1,
+      "processed_version": 1
+    }
+  ],
+  "memories": [
+    {
+      "id": "mem_da8512395ead46fe81d60232e6c72edb",
+      "content": "用户周末准备带儿子去动物园玩一天。",
+      "summary": "用户周末准备带儿子去动物园玩一天。",
+      "status": "active",
+      "version": 1,
+      "business_domains": null,
+      "metadata": {
+        "temporal_kind": "current",
+        "retention_kind": "temporary",
+        "project_context": null,
+        "project_limited": false,
+        "timestamp_origin": "source",
+        "governance_action": "ADD",
+        "source_occurred_at": "2026-10-13T10:00:00+08:00",
+        "explicit_expired_at": "2026-10-18T16:00:00+00:00",
+        "previous_memory_ids": []
+      },
+      "supersedes_id": null,
+      "effective_at": "2026-10-13 02:00:00+00:00",
+      "expired_at": "2026-10-18 16:00:00+00:00",
+      "invalidated_at": null,
+      "created_at": "2026-10-13 01:43:50.262937+00:00",
+      "updated_at": "2026-10-13 01:43:50.262937+00:00"
+    }
+  ],
+  "evidence": [
+    {
+      "downstream_memory_id": "mem_da8512395ead46fe81d60232e6c72edb",
+      "upstream_source_id": "src_adc64234189244f89302e88f2b17c55f",
+      "evidence_locator": {
+        "end_char": 15,
+        "message_id": "msg_125",
+        "start_char": 0
+      },
+      "evidence_group_id": "evg_8fa5c2f627cd004f2784468f1bcc47aff8042b9fe9610fd3c99b719d88b5",
+      "upstream_version": 1,
+      "status": "active",
+      "created_at": "2026-10-13 01:43:50.262937+00:00"
+    }
+  ],
+  "audits": [
+    {
+      "id": 14964,
+      "action": "INSERT",
+      "target_type": "source",
+      "target_id": "src_adc64234189244f89302e88f2b17c55f",
+      "reason_code": "CONVERSATION_INGESTED",
+      "reason": "接入来源消息",
+      "task_id": "tsk_975432aa0cee4bb181e9283ac8ef840f",
+      "context": null,
+      "state_before": null,
+      "state_after": {
+        "status": "active",
+        "version": 1,
+        "message_id": "msg_125"
+      },
+      "created_at": "2026-10-13 01:43:42.825118+00:00"
+    },
+    {
+      "id": 14965,
+      "action": "INSERT",
+      "target_type": "task",
+      "target_id": "tsk_975432aa0cee4bb181e9283ac8ef840f",
+      "reason_code": "FACT_EXTRACTION_ENQUEUED",
+      "reason": "提交事实抽取任务",
+      "task_id": "tsk_975432aa0cee4bb181e9283ac8ef840f",
+      "context": {
+        "initiator_id": "email_agent"
+      },
+      "state_before": null,
+      "state_after": {
+        "status": "pending",
+        "batch_seq": 11
+      },
+      "created_at": "2026-10-13 01:43:42.825118+00:00"
+    },
+    {
+      "id": 14966,
+      "action": "INSERT",
+      "target_type": "memory",
+      "target_id": "mem_da8512395ead46fe81d60232e6c72edb",
+      "reason_code": "FACT_EXTRACTED",
+      "reason": "创建事实记忆",
+      "task_id": "tsk_975432aa0cee4bb181e9283ac8ef840f",
+      "context": {
+        "message_ids": [
+          "msg_125"
+        ],
+        "initiator_id": "email_agent",
+        "timestamp_origin": "source",
+        "evidence_group_id": "evg_8fa5c2f627cd004f2784468f1bcc47aff8042b9fe9610fd3c99b719d88b5",
+        "governance_action": "ADD"
+      },
+      "state_before": null,
+      "state_after": {
+        "status": "active",
+        "content": "用户周末准备带儿子去动物园玩一天。",
+        "version": 1,
+        "expired_at": "2026-10-18T16:00:00+00:00",
+        "effective_at": "2026-10-13T10:00:00+08:00",
+        "evidence_count": 1
+      },
+      "created_at": "2026-10-13 01:43:50.262937+00:00"
+    },
+    {
+      "id": 14967,
+      "action": "INSERT",
+      "target_type": "source",
+      "target_id": "src_67aa2367c6bf483d9dfdb5b85aa74045",
+      "reason_code": "CONVERSATION_INGESTED",
+      "reason": "接入来源消息",
+      "task_id": "tsk_f7ba668037834bc5ab0cb4e0bd206673",
+      "context": null,
+      "state_before": null,
+      "state_after": {
+        "status": "active",
+        "version": 1,
+        "message_id": "msg_126"
+      },
+      "created_at": "2026-10-13 01:46:02.555279+00:00"
+    },
+    {
+      "id": 14968,
+      "action": "INSERT",
+      "target_type": "task",
+      "target_id": "tsk_f7ba668037834bc5ab0cb4e0bd206673",
+      "reason_code": "FACT_EXTRACTION_ENQUEUED",
+      "reason": "提交事实抽取任务",
+      "task_id": "tsk_f7ba668037834bc5ab0cb4e0bd206673",
+      "context": {
+        "initiator_id": "email_agent"
+      },
+      "state_before": null,
+      "state_after": {
+        "status": "pending",
+        "batch_seq": 12
+      },
+      "created_at": "2026-10-13 01:46:02.555279+00:00"
+    },
+    {
+      "id": 14969,
+      "action": "INSERT",
+      "target_type": "source",
+      "target_id": "src_771f931453a34f24bafe43863283c9e7",
+      "reason_code": "CONVERSATION_INGESTED",
+      "reason": "接入来源消息",
+      "task_id": "tsk_b3a6780d2cf649859713527bf769956d",
+      "context": null,
+      "state_before": null,
+      "state_after": {
+        "status": "active",
+        "version": 1,
+        "message_id": "msg_127"
+      },
+      "created_at": "2026-10-13 01:47:32.485150+00:00"
+    },
+    {
+      "id": 14970,
+      "action": "INSERT",
+      "target_type": "task",
+      "target_id": "tsk_b3a6780d2cf649859713527bf769956d",
+      "reason_code": "FACT_EXTRACTION_ENQUEUED",
+      "reason": "提交事实抽取任务",
+      "task_id": "tsk_b3a6780d2cf649859713527bf769956d",
+      "context": {
+        "initiator_id": "email_agent"
+      },
+      "state_before": null,
+      "state_after": {
+        "status": "pending",
+        "batch_seq": 13
+      },
+      "created_at": "2026-10-13 01:47:32.485150+00:00"
+    }
+  ],
+  "current_code_prompt_version": "p02-v11-context-evidence",
+  "current_code_extraction_prompt": "Extract atomic facts with value beyond a single task, newly stated or explicitly confirmed by target user messages. Write each memory as one short, standalone declarative sentence with an explicit subject, predicate and object or complement. For facts about the speaker, use 用户 as the Chinese subject (the user in English), not 我, 我们, 你, I, we or you. Resolve pronouns, demonstratives and omitted subjects using target messages and history. History may identify a referent without independently supplying a new fact. For example, '我喜欢吃年糕。' becomes '用户喜欢吃年糕。'; with history '我最近搬到了杭州。', '我住在那边。' becomes '用户住在杭州。'. Without a supported place referent, omit that fact. For '项目方案详细说明。', write '用户要求项目方案提供详细说明。'. Resolve references to other people to their supported names or roles, not to 用户: if history identifies 他 as 李明, '以后邮件的审批都交给他负责。' can become '李明负责以后的邮件审批。'. Never guess a person, place or object. Keep literal names, titles and verbatim quotations unchanged: '我喜欢电影《我和我的祖国》。' becomes '用户喜欢电影《我和我的祖国》。', not a replacement inside the title. History cannot independently produce facts. Cite all necessary target AND history message_ids as one support group; at least one cited message must be a TARGET user. A confirmation must cite the proposal/question that gives it meaning. Attachment references are not readable attachment contents. Never infer user facts from assistant/system/tool alone. Business labels describe applicable scenarios, not source systems or mentioned topics. Use communication for SMS, phone calls and instant messaging (excluding email); email for reading, writing, replying, processing and organizing email; disk for personal cloud drive backup, storage, organization and sharing, not local files. These are initial canonical labels, NOT an exhaustive enum. For other explicit scenarios extract a short, stable semantic label in the user's language, e.g. 方案编写. Reuse canonical labels for their synonyms. Split independent applicability requirements. Personal identity, birthdays, residence, occupations, preferences and habits do not require a business scenario: use business_domains=null unless the fact itself limits business applicability. For example, '用户喜欢吃年糕。' is a long_term personal preference with business_domains=null. Preserve every explicit business, project, customer, recipient, occasion and temporal condition in memory text. Do not invent restrictions from the source system or topic. Difficulty assigning a business label must not discard a complete, supported fact; preserve its stated activity and use a short semantic label when it is business-limited. A generic project-proposal preference is a proposal-writing scenario, not a specific project. Project-related durable memories MUST be preserved. Project IDs are reserved and not assigned. If limited to a particular project set project_limited=true and project_context to its explicit name or self-contained identifying context; preserve that condition in memory text. Otherwise project_limited=false and project_context=null. Unknown or ambiguous project names do not by themselves invalidate a self-contained fact. Preserve the supplied project wording without guessing identity. Do not broaden a project rule into a general preference. A project material directory does not imply disk. Literal names/placeholders such as 未知项目 and 重名项目 are still project_context; do not drop them solely because they are unknown/ambiguous. For '重名项目的材料放在批准目录', preserve that project condition and use an applicable material-management scenario label (not disk unless cloud drive is stated). Short standalone requirements such as '项目方案详细说明。' are durable preferences: extract with a proposal-writing label, project_limited=false. Use the original language in memory text. Set retention_kind=temporary for explicitly temporary or stage-specific facts, such as a current-phase responsibility or a near-term recurring requirement; regular for other facts; long_term for personal identity, occupations, lasting preferences, habits and recurring requirements suitable for a user profile. Project-limited lasting requirements may also be long_term; do not broaden their conditions. Project/business information such as suppliers and material locations is regular unless explicitly temporary. Absence of a deadline alone never implies long_term. Split statements with different lifetimes. Stage-specific responsibilities have value across tasks: extract their explicit business activity as a scenario, e.g. material review uses 材料审核; do not discard them solely because they are temporary. Do not extract single-task execution progress, tool results or completion notifications such as 'generating the file' or 'email sent'. Preserve uncertainty: a possible plan is not a definite future event. Preserve temporal meaning in self-contained text. Resolve stated dates relative to occurred_at only when timestamp_origin=source. adapter_observed is ingestion observation time, not the original event time: do not resolve relative dates or infer state recency from it. Such messages have occurred_at=null in model input. For example, '本周我负责 材料审核，下周恢复原安排' with unknown event time must produce NO fact and a context_insufficient assessment. Missing required dates must be context_insufficient. not processing time. Use ISO8601 timestamps with timezone; never fabricate precision. expired_at is only an explicitly stated deadline or historical interval boundary; never compute a default TTL. For 'valid this week', use the next Monday at 00:00 in the source message's timezone as the exclusive deadline. temporal_kind=historical requires an effective_at and expired_at interval. A year-only historical period uses Jan 1 through Jan 1 of the next year (exclusive). If a current move/update is stated only by year or month, set effective_at=null; do not invent the exact first day as the event date. change_kind is none, correction, update, or clarification; use clarification only for explicit resolution of contradictory prior statements, update only for an explicit current-state change. Unresolved references or missing necessary context yield no fact and a context_insufficient assessment; no durable value yields no_durable_value. For EACH target user message, return an assessment of evaluated, no_durable_value or context_insufficient with a short reason (no chain-of-thought). A message may have facts and also context_insufficient when another statement lacks context. Return JSON {facts:[{memory:string,message_ids:[string],business_domains:[labels]|null,project_limited:boolean,project_context:string|null,temporal_kind:current|historical,retention_kind:temporary|regular|long_term,change_kind:none|correction|update|clarification,effective_at:timestamp|null,expired_at:timestamp|null}],assessments:[{message_id:string,outcome:evaluated|no_durable_value|context_insufficient,reason:string}]}.",
+  "limitations": "Frozen slices and committed outcomes are historical DB evidence. System prompt is reconstructed from current code with matching version, not a persisted historical HTTP request. Raw completed model responses and historical model name are not persisted.",
+  "local_verification": {
+    "provider_payload_capture": "3/3 frozen slice payloads passed; no model/network invocation",
+    "supersession_timestamp_checks": [
+      {
+        "message_id": "msg_126",
+        "actual_timestamps_result": "late input cannot supersede a newer fact",
+        "synthetic_later_source_time_result": "passed; only timestamp changed in local verification"
+      },
+      {
+        "message_id": "msg_127",
+        "actual_timestamps_result": "late input cannot supersede a newer fact",
+        "synthetic_later_source_time_result": "passed; only timestamp changed in local verification"
+      }
+    ]
+  }
+}

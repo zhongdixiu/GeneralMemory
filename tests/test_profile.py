@@ -731,7 +731,9 @@ def test_fact_without_scope_known_reaches_profile_with_conditions(
         "expired_at": None,
     }
     model = QwenFactModel(api_key="fake", base_url="https://example.invalid/v1")
-    monkeypatch.setattr(model, "_json_completion", lambda *args: {"facts": [fact]})
+    monkeypatch.setattr(model, "_json_completion", lambda *args: {
+        "facts": [fact], "assessments": [{"message_id": "conditions",
+                                         "outcome": "evaluated", "reason": "有明确依据"}]})
     _run_fact(factory, model)
     _drain_profile(factory, tenant_id, VerbatimProfileModel())
     with factory() as session:

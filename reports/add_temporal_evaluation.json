@@ -1,0 +1,577 @@
+{
+  "prompt_version": "p02-v12-receipt-content-time",
+  "model": "qwen3.8-max",
+  "executed_at": "2026-10-13T04:23:08.603564+00:00",
+  "cases": [
+    {
+      "case": "zoo_step_1",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "zoo-0",
+          "role": "user",
+          "content": "这周末我准备带儿子去动物园玩一天",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "related_memories": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户计划2026年10月17日或18日带儿子去动物园玩一天。",
+            "message_ids": [
+              "zoo-0"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "temporary",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "zoo-0",
+            "outcome": "evaluated",
+            "reason": "Extracted a temporary plan to take the user's son to the zoo this weekend, with the date resolved from the occurred_at anchor.",
+            "reason_code": null
+          }
+        ]
+      },
+      "governance": null
+    },
+    {
+      "case": "zoo_step_2",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "zoo-1",
+          "role": "user",
+          "content": "确切的说是这周六",
+          "occurred_at": "2026-10-13T09:01:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 2,
+          "position": 0
+        }
+      ],
+      "history": [
+        {
+          "message_id": "zoo-0",
+          "role": "user",
+          "content": "这周末我准备带儿子去动物园玩一天",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "related_memories": [
+        {
+          "id": "memory-0",
+          "memory": "用户计划2026年10月17日或18日带儿子去动物园玩一天。",
+          "status": "active",
+          "temporal_kind": "current",
+          "business_domains": null,
+          "project_context": null,
+          "conflict_group_id": null,
+          "explicit_expired_at": null,
+          "expired_at": null,
+          "effective_at": "2026-10-13T09:00:00+08:00",
+          "source_occurred_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "source_message_ids": [
+            "zoo-0"
+          ],
+          "statement_order": {
+            "caller_agent_id": "synthetic",
+            "source_system": "synthetic",
+            "session_id": "synthetic",
+            "batch_seq": 1,
+            "position": 0
+          }
+        }
+      ],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户计划2026年10月17日（周六）带儿子去动物园玩一天。",
+            "message_ids": [
+              "zoo-0",
+              "zoo-1"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "temporary",
+            "change_kind": "clarification",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "zoo-1",
+            "outcome": "evaluated",
+            "reason": "Refines the previously stated weekend plan to specifically Saturday, which is 2026-10-17 based on the occurred_at anchor.",
+            "reason_code": null
+          }
+        ]
+      },
+      "governance": {
+        "action": "SUPERSEDE",
+        "memory_ids": [
+          "memory-0"
+        ],
+        "justification_message_id": "zoo-1",
+        "justification_quote": "确切的说是这周六",
+        "historical_before_id": null
+      }
+    },
+    {
+      "case": "zoo_step_3",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "zoo-2",
+          "role": "user",
+          "content": "这周末还是不去了，要加班",
+          "occurred_at": "2026-10-13T09:02:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 3,
+          "position": 0
+        }
+      ],
+      "history": [
+        {
+          "message_id": "zoo-0",
+          "role": "user",
+          "content": "这周末我准备带儿子去动物园玩一天",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        },
+        {
+          "message_id": "zoo-1",
+          "role": "user",
+          "content": "确切的说是这周六",
+          "occurred_at": "2026-10-13T09:01:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 2,
+          "position": 0
+        }
+      ],
+      "related_memories": [
+        {
+          "id": "memory-1",
+          "memory": "用户计划2026年10月17日（周六）带儿子去动物园玩一天。",
+          "status": "active",
+          "temporal_kind": "current",
+          "business_domains": null,
+          "project_context": null,
+          "conflict_group_id": null,
+          "explicit_expired_at": null,
+          "expired_at": null,
+          "effective_at": "2026-10-13T09:00:00+08:00",
+          "source_occurred_at": "2026-10-13T09:01:00+08:00",
+          "timestamp_origin": "source",
+          "source_message_ids": [
+            "zoo-0",
+            "zoo-1"
+          ],
+          "statement_order": {
+            "caller_agent_id": "synthetic",
+            "source_system": "synthetic",
+            "session_id": "synthetic",
+            "batch_seq": 2,
+            "position": 0
+          }
+        }
+      ],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户取消了2026年10月17日（周六）带儿子去动物园的计划，原因是需要加班。",
+            "message_ids": [
+              "zoo-0",
+              "zoo-1",
+              "zoo-2"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "temporary",
+            "change_kind": "update",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "zoo-2",
+            "outcome": "evaluated",
+            "reason": "The target message cancels the previously stated plan to visit the zoo this Saturday, providing the reason of overtime work. The date anchor is resolved via history messages.",
+            "reason_code": null
+          }
+        ]
+      },
+      "governance": {
+        "action": "SUPERSEDE",
+        "memory_ids": [
+          "memory-1"
+        ],
+        "justification_message_id": "zoo-2",
+        "justification_quote": "这周末还是不去了，要加班",
+        "historical_before_id": null
+      }
+    },
+    {
+      "case": "past_residence_without_interval",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "past",
+          "role": "user",
+          "content": "我以前在北京住过",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户以前在北京住过。",
+            "message_ids": [
+              "past"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "historical",
+            "retention_kind": "regular",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "past",
+            "outcome": "evaluated",
+            "reason": "The user explicitly states a past residence in Beijing, which is a historical personal fact.",
+            "reason_code": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "past_year_import",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "year",
+          "role": "user",
+          "content": "我2024年在北京住过",
+          "occurred_at": "2024-07-01T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户2024年在北京住过。",
+            "message_ids": [
+              "year"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "historical",
+            "retention_kind": "regular",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "year",
+            "outcome": "evaluated",
+            "reason": "The user explicitly states a past residence in Beijing during 2024, which is a historical personal fact.",
+            "reason_code": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "realtime_default_saturday",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "live",
+          "role": "user",
+          "content": "这周六去动物园",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "server_received",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户计划2026年10月17日（周六）去动物园。",
+            "message_ids": [
+              "live"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "temporary",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "live",
+            "outcome": "evaluated",
+            "reason": "Extracted a temporary plan to visit the zoo this Saturday, resolved to 2026-10-17 based on occurred_at 2026-10-13 (Tuesday) in Asia/Shanghai timezone.",
+            "reason_code": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "known_old_saturday",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "old",
+          "role": "user",
+          "content": "这周六去动物园",
+          "occurred_at": "2024-09-05T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户计划2024年9月7日（周六）去动物园。",
+            "message_ids": [
+              "old"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "temporary",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "old",
+            "outcome": "evaluated",
+            "reason": "The target message states a plan to go to the zoo this Saturday. With occurred_at 2024-09-05 (Thursday) and timestamp_origin=source, '这周六' resolves to 2024-09-07 in Asia/Shanghai timezone.",
+            "reason_code": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "unknown_saturday",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "unknown",
+          "role": "user",
+          "content": "这周六去动物园",
+          "occurred_at": null,
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "adapter_observed",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [],
+        "assessments": [
+          {
+            "message_id": "unknown",
+            "outcome": "context_insufficient",
+            "reason": "The message states a plan for '这周六' (this Saturday), but occurred_at is null and timestamp_origin is adapter_observed, so there is no date anchor to resolve which Saturday is meant.",
+            "reason_code": "MISSING_DATE_ANCHOR"
+          }
+        ]
+      }
+    },
+    {
+      "case": "unknown_partial",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "partial",
+          "role": "user",
+          "content": "我以前在北京住过；这周六去动物园。",
+          "occurred_at": null,
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "adapter_observed",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户以前在北京住过。",
+            "message_ids": [
+              "partial"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "historical",
+            "retention_kind": "regular",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "partial",
+            "outcome": "context_insufficient",
+            "reason": "'这周六去动物园'缺少日期锚点，因为occurred_at为null且timestamp_origin为adapter_observed，无法解析'这周六'的具体日期。",
+            "reason_code": "MISSING_DATE_ANCHOR"
+          }
+        ]
+      }
+    },
+    {
+      "case": "future_rule",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "rule",
+          "role": "user",
+          "content": "下月1日起周报采用列表",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户要求从2026年11月1日起周报采用列表格式。",
+            "message_ids": [
+              "rule"
+            ],
+            "business_domains": [
+              "方案编写"
+            ],
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "regular",
+            "change_kind": "none",
+            "effective_at": "2026-10-31T16:00:00Z",
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "rule",
+            "outcome": "evaluated",
+            "reason": "Extracted a future applicability requirement for weekly report format starting 2026-11-01, resolved from '下月1日' using the occurred_at date anchor of 2026-10-13.",
+            "reason_code": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "business_deadline_is_not_retention",
+      "passed": true,
+      "targets": [
+        {
+          "message_id": "deadline",
+          "role": "user",
+          "content": "本周我负责材料审核，下周恢复原安排",
+          "occurred_at": "2026-10-13T09:00:00+08:00",
+          "received_at": "2026-10-13T09:00:00+08:00",
+          "timestamp_origin": "source",
+          "batch_seq": 1,
+          "position": 0
+        }
+      ],
+      "history": [],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户本周负责材料审核，下周恢复原安排。",
+            "message_ids": [
+              "deadline"
+            ],
+            "business_domains": [
+              "材料审核"
+            ],
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "temporary",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "deadline",
+            "outcome": "evaluated",
+            "reason": "The message states a temporary stage-specific responsibility with a clear week interval anchored by occurred_at 2026-10-13 (Tuesday, Beijing time), making '本周' and '下周' resolvable. Extracted as a temporary fact preserving the interval in text.",
+            "reason_code": null
+          }
+        ]
+      }
+    }
+  ]
+}

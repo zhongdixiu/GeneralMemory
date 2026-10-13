@@ -50,14 +50,18 @@ def required_history(targets, history):
     return [message for index, message in enumerate(history) if index in selected]
 
 
-def select_history(targets, history, *, system, limit):
+def select_history(targets, history, *, system, limit, related_memories=None):
+    related_memories = related_memories or []
     required = required_history(targets, history)
+    support_ids = {mid for memory in related_memories for mid in memory["message_ids"]}
+    required = [m for m in history if m in required or m["message_id"] in support_ids]
+    extra = {"related_memories": related_memories} if related_memories else {}
     chosen = {id(m) for m in required}
-    if input_size(system, {"targets": targets, "history": required}) > limit:
+    if input_size(system, {"targets": targets, "history": required, **extra}) > limit:
         return None
     for message in reversed(history[-30:]):
         proposed = [m for m in history if id(m) in chosen or m is message]
-        if input_size(system, {"targets": targets, "history": proposed}) <= limit:
+        if input_size(system, {"targets": targets, "history": proposed, **extra}) <= limit:
             chosen.add(id(message))
     return [m for m in history if id(m) in chosen]
 
@@ -68,10 +72,12 @@ def build_slices(
     *,
     system: str,
     budget: ExtractionBudget,
+    related_memories: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     limit = budget.input_tokens - budget.output_tokens
     slices = []
     prior = list(history)
+    related_memories = related_memories or []
     for message in targets:
         # Repeated/previous messages may supply context, never a duplicate target identity.
         prior = [m for m in prior if m["message_id"] != message["message_id"]]
@@ -90,12 +96,25 @@ def build_slices(
                     "history": [], "split_depth": 0, "context_error": "CONTEXT_BUDGET_EXCEEDED",
                 })
                 break
+            # Raw evidence takes priority over optional state hints. Keep complete support groups.
+            related = []
+            for memory in related_memories:
+                proposed = [*related, memory]
+                full = {**message, "content": content[start:], "start_char": start,
+                        "end_char": len(content)}
+                if select_history([full], prior, system=system, limit=limit,
+                                  related_memories=proposed) is not None:
+                    related = proposed
+            support_ids = {mid for memory in related for mid in memory["message_ids"]}
+            required = [m for m in prior if m in required or m["message_id"] in support_ids]
+            extra = {"related_memories": related} if related else {}
             low, high, end = start + 1, len(content), start
             while low <= high:
                 midpoint = (low + high) // 2
                 fragment = {**message, "content": content[start:midpoint],
                             "start_char": start, "end_char": midpoint}
-                if input_size(system, {"targets": [fragment], "history": required}) <= limit:
+                if input_size(system, {"targets": [fragment],
+                                       "history": required, **extra}) <= limit:
                     end, low = midpoint, midpoint + 1
                 else:
                     high = midpoint - 1
@@ -105,17 +124,23 @@ def build_slices(
                     end = paragraph + 1
             fragment = {**message, "content": content[start:end],
                         "start_char": start, "end_char": end}
-            selected = select_history([fragment], prior, system=system, limit=limit)
-            current = {"targets": [fragment], "history": selected, "split_depth": 0}
+            selected = select_history([fragment], prior, system=system, limit=limit,
+                                      related_memories=related)
+            current = {"targets": [fragment], "history": selected, "split_depth": 0, **extra}
             if slices and not slices[-1].get("context_error"):
                 previous = slices[-1]
                 if message["message_id"] not in {m["message_id"] for m in previous["targets"]}:
                     merged = [*previous["targets"], fragment]
                     pool = [m for m in prior
                             if m["message_id"] not in {t["message_id"] for t in merged}]
-                    merged_history = select_history(merged, pool, system=system, limit=limit)
+                    merged_related = [m for m in related
+                                      if all(mid in {h["message_id"] for h in pool + merged}
+                                             for mid in m["message_ids"])]
+                    merged_history = select_history(merged, pool, system=system, limit=limit,
+                                                    related_memories=merged_related)
                     if merged_history is not None:
-                        previous.update(targets=merged, history=merged_history)
+                        previous.update(targets=merged, history=merged_history,
+                                        related_memories=merged_related)
                     else:
                         slices.append(current)
                 else:

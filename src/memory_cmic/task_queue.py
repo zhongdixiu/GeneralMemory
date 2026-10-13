@@ -12,6 +12,7 @@ from memory_cmic.models import MemoryItem, MemoryTask
 
 def enqueue_task(session: Session, data: Mapping[str, Any]) -> MemoryTask:
     caller_agent_id = data.get("caller_agent_id")
+    agent_id = data.get("agent_id", caller_agent_id)
     caller_filter = (
         MemoryTask.caller_agent_id == caller_agent_id
         if caller_agent_id is not None
@@ -23,6 +24,7 @@ def enqueue_task(session: Session, data: Mapping[str, Any]) -> MemoryTask:
             caller_filter,
             *([MemoryTask.user_id == data.get("user_id")]
               if caller_agent_id is not None else []),
+            *([MemoryTask.agent_id == agent_id] if caller_agent_id is not None else []),
             MemoryTask.idempotency_key == data["idempotency_key"],
         )
     ).one_or_none()
@@ -120,6 +122,7 @@ def claim_tasks(
                                 AND prior.source_system = candidate.source_system
                                 AND prior.caller_agent_id IS NOT DISTINCT FROM
                                     candidate.caller_agent_id
+                                AND prior.agent_id IS NOT DISTINCT FROM candidate.agent_id
                                 AND prior.user_id = candidate.user_id
                                 AND prior.session_id = candidate.session_id
                                 AND prior.batch_seq < candidate.batch_seq

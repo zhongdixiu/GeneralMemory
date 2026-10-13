@@ -33,11 +33,12 @@ def test_managed_ttl_is_not_an_explicit_deadline_and_legacy_expiry_is_preserved(
     assert explicit_expired_at(memory) is None
 
 
-def test_extraction_keeps_original_timezone_and_legacy_falls_back_to_stored_time():
+def test_extraction_uses_beijing_and_keeps_stored_instant_for_legacy():
     source = SourceRecord(
         occurred_at=datetime(2026, 10, 4, 16, 30, tzinfo=UTC),
+        received_at=datetime(2026, 10, 13, tzinfo=UTC),
         metadata_json={"original_occurred_at": "2026-10-05T00:30:00+08:00"},
     )
     assert _source_message(source)["occurred_at"] == "2026-10-05T00:30:00+08:00"
     source.metadata_json = None
-    assert _source_message(source)["occurred_at"] == "2026-10-04T16:30:00+00:00"
+    assert _source_message(source)["occurred_at"] == "2026-10-05T00:30:00+08:00"

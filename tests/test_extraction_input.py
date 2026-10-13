@@ -92,3 +92,26 @@ def test_empty_tool_call_is_available_to_later_slice():
                           budget=ExtractionBudget(input_tokens=limit + 128, output_tokens=128))
     assert len(slices) == 2
     assert slices[1]["context_error"] == "CONTEXT_BUDGET_EXCEEDED"
+
+
+def test_optional_state_hints_never_force_short_target_into_fragments():
+    target = _message("new", "独立完整的短消息")
+    history = [_message("old", "旧计划")]
+    related = [{"id": "memory", "message_ids": ["old"], "memory": "甲" * 5000}]
+    slices = build_slices([target], history, system=EXTRACTION_PROMPT,
+                          budget=ExtractionBudget(), related_memories=related)
+    assert len(slices) == 1 and slices[0]["targets"][0]["content"] == target["content"]
+    assert not slices[0].get("related_memories")
+
+
+def test_state_hint_support_can_be_kept_beyond_ordinary_window():
+    history = [_message("old", "用户准备去动物园。")]
+    history.extend(_message(str(i), "普通历史") for i in range(35))
+    related = [{"id": "memory", "message_ids": ["old"], "memory": "用户准备去动物园。"}]
+    slices = build_slices([_message("new", "确切说周六。")], history,
+                          system=EXTRACTION_PROMPT, budget=ExtractionBudget(),
+                          related_memories=related)
+    assert slices[0]["related_memories"] == related
+    assert any(m["message_id"] == "old" for m in slices[0]["history"])
+    payload = {key: slices[0][key] for key in ("targets", "history", "related_memories")}
+    assert input_size(EXTRACTION_PROMPT, payload) <= 9952

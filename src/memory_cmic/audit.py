@@ -96,6 +96,8 @@ def record_audit(
         context = dict(context or {})
         if task.caller_agent_id:
             context["initiator_id"] = task.caller_agent_id
+        if task.agent_id and task.agent_id != task.caller_agent_id:
+            context["agent_id"] = task.agent_id
         triggers = (task.payload or {}).get("trigger_correlation_ids")
         if triggers:
             context["trigger_correlation_ids"] = triggers

@@ -96,3 +96,46 @@ def test_add_downgrade_refuses_new_namespace_collisions(old_add_schema):
             migration.downgrade()
     assert connection.scalar(text("SELECT count(*) FROM conversation_session")) == 2
     assert connection.scalar(text("SELECT caller_agent_id FROM source_record")) == "agent"
+
+
+@pytest.fixture
+def old_time_schema(connection):
+    schema = "time_migration_" + uuid4().hex
+    connection.execute(text(f"CREATE SCHEMA {schema}"))
+    connection.execute(text(f"SET LOCAL search_path TO {schema}, public"))
+    connection.execute(text("""CREATE TABLE source_record (
+        id TEXT PRIMARY KEY, occurred_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+        metadata JSONB)"""))
+    connection.execute(text("""INSERT INTO source_record VALUES
+        ('source', '2024-01-01T00:00:00Z', '2026-10-13T00:00:00Z',
+         '{"timestamp_origin":"adapter_observed","original_occurred_at":"2024-01-01T00:00:00Z"}')
+    """))
+    path = Path(__file__).parents[1] / "migrations/versions/0009_add_time_semantics.py"
+    spec = importlib.util.spec_from_file_location("time_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with Operations.context(MigrationContext.configure(connection)):
+        yield connection, module
+
+
+def test_time_migration_preserves_old_observation_and_labels_receipt_estimate(old_time_schema):
+    connection, migration = old_time_schema
+    migration.upgrade()
+    source = connection.execute(text("SELECT * FROM source_record")).mappings().one()
+    assert source["received_at"] == source["created_at"]
+    assert source["metadata"]["received_at_origin"] == "legacy_created_at"
+    assert source["metadata"]["timestamp_origin"] == "adapter_observed"
+    assert source["occurred_at"].year == 2024
+    migration.downgrade()
+    assert connection.scalar(text("SELECT occurred_at FROM source_record")).year == 2024
+
+
+def test_time_downgrade_refuses_to_invent_unknown_source_date(old_time_schema):
+    connection, migration = old_time_schema
+    migration.upgrade()
+    connection.execute(text("UPDATE source_record SET occurred_at = NULL"))
+    with pytest.raises(DBAPIError):
+        with connection.begin_nested():
+            migration.downgrade()
+    assert connection.scalar(text("SELECT occurred_at FROM source_record")) is None
+    assert connection.scalar(text("SELECT received_at FROM source_record")) is not None

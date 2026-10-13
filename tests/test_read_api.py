@@ -447,7 +447,7 @@ def test_search_rechecks_source_filters_after_model_call(read_api, session, chan
         elif change == "agent":
             session.execute(update(MemoryTask).where(
                 MemoryTask.tenant_id == tenant,
-            ).values(caller_agent_id="agent_b"))
+            ).values(agent_id="agent_b"))
         else:
             session.execute(update(MemoryTaskSource).where(
                 MemoryTaskSource.tenant_id == tenant,
