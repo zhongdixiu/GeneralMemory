@@ -1,0 +1,264 @@
+{
+  "executed_at": "2026-10-14T05:48:15.806609+00:00",
+  "prompt_version": "p02-v13-compact-bounded-history",
+  "measurement": "synthetic conservative UTF-8 bytes, not token counts",
+  "governance": {
+    "before_bytes": 11688,
+    "after_bytes": 6163
+  },
+  "planning": [
+    {
+      "rounds": 1,
+      "assistant_chars": 500,
+      "extraction_requests": 1,
+      "max_request_bytes": 8823,
+      "planning_median_ms": 0.258,
+      "within_call_limit_before_embedding_governance": true
+    },
+    {
+      "rounds": 1,
+      "assistant_chars": 2000,
+      "extraction_requests": 1,
+      "max_request_bytes": 8823,
+      "planning_median_ms": 0.187,
+      "within_call_limit_before_embedding_governance": true
+    },
+    {
+      "rounds": 1,
+      "assistant_chars": 10000,
+      "extraction_requests": 1,
+      "max_request_bytes": 8823,
+      "planning_median_ms": 0.183,
+      "within_call_limit_before_embedding_governance": true
+    },
+    {
+      "rounds": 10,
+      "assistant_chars": 500,
+      "extraction_requests": 10,
+      "max_request_bytes": 9876,
+      "planning_median_ms": 3.19,
+      "within_call_limit_before_embedding_governance": true
+    },
+    {
+      "rounds": 10,
+      "assistant_chars": 2000,
+      "extraction_requests": 10,
+      "max_request_bytes": 9876,
+      "planning_median_ms": 1.704,
+      "within_call_limit_before_embedding_governance": true
+    },
+    {
+      "rounds": 10,
+      "assistant_chars": 10000,
+      "extraction_requests": 10,
+      "max_request_bytes": 9876,
+      "planning_median_ms": 3.638,
+      "within_call_limit_before_embedding_governance": true
+    },
+    {
+      "rounds": 50,
+      "assistant_chars": 500,
+      "extraction_requests": 50,
+      "max_request_bytes": 9878,
+      "planning_median_ms": 15.121,
+      "within_call_limit_before_embedding_governance": false
+    },
+    {
+      "rounds": 50,
+      "assistant_chars": 2000,
+      "extraction_requests": 50,
+      "max_request_bytes": 9878,
+      "planning_median_ms": 20.611,
+      "within_call_limit_before_embedding_governance": false
+    },
+    {
+      "rounds": 50,
+      "assistant_chars": 10000,
+      "extraction_requests": 50,
+      "max_request_bytes": 9878,
+      "planning_median_ms": 48.841,
+      "within_call_limit_before_embedding_governance": false
+    }
+  ],
+  "live": [
+    {
+      "case": "independent_with_truncated_history",
+      "passed": true,
+      "usage": {
+        "completion_tokens": 119,
+        "prompt_tokens": 1781,
+        "total_tokens": 1900,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": 1781
+        }
+      },
+      "history": [
+        {
+          "message_id": "proposal",
+          "role": "assistant",
+          "content": "Use bullet points for all future weekly reports. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed ",
+          "occurred_at": "2026-10-14T09:00:00+08:00",
+          "start_char": 0,
+          "end_char": 300,
+          "truncated": true
+        }
+      ],
+      "output": {
+        "facts": [
+          {
+            "memory": "用户喜欢吃年糕。",
+            "message_ids": [
+              "independent"
+            ],
+            "business_domains": null,
+            "project_limited": false,
+            "project_context": null,
+            "temporal_kind": "current",
+            "retention_kind": "long_term",
+            "change_kind": "none",
+            "effective_at": null,
+            "expired_at": null
+          }
+        ],
+        "assessments": [
+          {
+            "message_id": "independent",
+            "outcome": "evaluated",
+            "reason": "The target message explicitly states a personal food preference, which is extracted as a long-term fact. The truncated history proposal about weekly reports is unrelated and not confirmed by the user.",
+            "reason_code": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "confirmation_of_unseen_conditions",
+      "passed": true,
+      "usage": {
+        "completion_tokens": 138,
+        "prompt_tokens": 1792,
+        "total_tokens": 1930,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 1024,
+          "text_tokens": 1792
+        }
+      },
+      "history": [
+        {
+          "message_id": "proposal",
+          "role": "assistant",
+          "content": "Use bullet points for all future weekly reports. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed explanation. Detailed ",
+          "occurred_at": "2026-10-14T09:00:00+08:00",
+          "start_char": 0,
+          "end_char": 300,
+          "truncated": true
+        }
+      ],
+      "output": {
+        "facts": [],
+        "assessments": [
+          {
+            "message_id": "confirm",
+            "outcome": "context_insufficient",
+            "reason": "Fact cites truncated history; complete supporting context is required.",
+            "reason_code": "HISTORY_TRUNCATED"
+          }
+        ]
+      }
+    },
+    {
+      "case": "DUPLICATE",
+      "passed": true,
+      "usage": {
+        "completion_tokens": 32,
+        "prompt_tokens": 1498,
+        "total_tokens": 1530,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": 1498
+        }
+      },
+      "output": {
+        "action": "DUPLICATE",
+        "memory_ids": [
+          "mem_00000000000000000000000000000000"
+        ],
+        "justification_message_id": null,
+        "justification_quote": null,
+        "historical_before_id": null
+      }
+    },
+    {
+      "case": "SUPERSEDE",
+      "passed": true,
+      "usage": {
+        "completion_tokens": 38,
+        "prompt_tokens": 1502,
+        "total_tokens": 1540,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": 1502
+        }
+      },
+      "output": {
+        "action": "SUPERSEDE",
+        "memory_ids": [
+          "mem_00000000000000000000000000000000"
+        ],
+        "justification_message_id": "user",
+        "justification_quote": "用户现在搬到了杭州。",
+        "historical_before_id": null
+      }
+    },
+    {
+      "case": "DISPUTE",
+      "passed": true,
+      "usage": {
+        "completion_tokens": 32,
+        "prompt_tokens": 1510,
+        "total_tokens": 1542,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": 1510
+        }
+      },
+      "output": {
+        "action": "DISPUTE",
+        "memory_ids": [
+          "mem_00000000000000000000000000000000"
+        ],
+        "justification_message_id": null,
+        "justification_quote": null,
+        "historical_before_id": null
+      }
+    }
+  ],
+  "model": "qwen3.8-max",
+  "original_task_rebuild": {
+    "task_id": "tsk_8c8288f581d84aeca1f898d8710cb226",
+    "mode": "read_only_current_candidate_rebuild",
+    "available": true,
+    "original_status": "failed",
+    "candidate_count": 10,
+    "old_representation_bytes": 10236,
+    "compact_representation_bytes": 8052,
+    "default_input_limit": 9952,
+    "within_default_limit": true,
+    "caveat": "Current latest 10 candidates plus conflict groups; original and similarity candidate sets were not frozen. No task reprocessing or model call."
+  }
+}

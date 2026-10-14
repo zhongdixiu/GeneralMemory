@@ -334,6 +334,14 @@ def test_worker_rejects_non_user_only_evidence(worker_context, engine, role):
         def extract(self, *, targets, history):
             return [ExtractedFact(memory="用户喜欢简洁邮件。", message_ids=["role"])]
 
+    # Auxiliary-only sources are accepted without extraction. A later user target
+    # still cannot produce a fact supported exclusively by that auxiliary source.
+    _run(engine, NonUserFactModel())
+    with Session(engine) as session:
+        task = session.get(MemoryTask, task_id)
+        assert task.status == "succeeded"
+        assert task.payload["execution"]["model_calls"] == 0
+    task_id = _add(client, key="after-role", message_id="user-after-role", content="可以。")
     _run(engine, NonUserFactModel())
     with Session(engine) as session:
         task = session.get(MemoryTask, task_id)

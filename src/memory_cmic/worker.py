@@ -24,12 +24,12 @@ from memory_cmic.db import create_database_engine
 from memory_cmic.extraction_input import (
     ExtractionBudget,
     build_slices,
-    input_size,
     select_history,
     split_slice,
 )
 from memory_cmic.governance_state import mark_dirty
 from memory_cmic.lifecycle import evidence_group_is_complete, govern_memory
+from memory_cmic.model_input import extraction_size, governance_payload, request_size
 from memory_cmic.models import (
     MemoryEmbedding,
     MemoryEvidence,
@@ -45,13 +45,16 @@ from memory_cmic.providers import (
     Embedder,
     ExtractedFact,
     ExtractionAssessment,
+    ExtractionOutput,
     FactModel,
     GovernanceDecision,
+    InputLimitError,
     OutputLimitError,
     ProviderError,
     QwenFactModel,
     SiliconFlowEmbedder,
     candidate_skip_reason,
+    guard_history_evidence,
     validate_fact_evidence,
 )
 from memory_cmic.settings import Settings
@@ -917,19 +920,25 @@ def _plan_decisions(
                 decision = None
         if decision is None:
             if candidates:
-                payload = {
-                    "fact": fact.model_dump(mode="json"),
-                    "candidates": candidates,
-                    "targets": task_input.targets,
-                }
+                cited_ids = set(fact.message_ids)
+                governance_targets = [m for m in task_input.targets
+                                      if m["role"] == "user"
+                                      and m["message_id"] in cited_ids]
+                payload = governance_payload(fact.model_dump(mode="json"), candidates,
+                                             governance_targets)
                 if (
-                    input_size(GOVERNANCE_PROMPT, payload)
+                    request_size(GOVERNANCE_PROMPT, payload)
                     > budget.input_tokens - budget.output_tokens
                 ):
-                    raise WorkerInputError("governance input exceeds model budget")
+                    decisions.append(FactDecision(
+                        fact, embedding, GovernanceDecision(action="ADD"),
+                        fingerprints[scope], "", None,
+                        skip_reason="GOVERNANCE_BUDGET_EXCEEDED",
+                    ))
+                    continue
                 consume_call()
                 decision = fact_model.resolve(
-                    fact=fact, candidates=candidates, targets=task_input.targets
+                    fact=fact, candidates=candidates, targets=governance_targets
                 )
                 try:
                     _check_governance(decision, fact, candidates, task_input)
@@ -1178,7 +1187,10 @@ def _slice_processing_results(session, task_input, decisions, assessments, skipp
                     if message["message_id"] in d.fact.message_ids]
         for index, decision in matching:
             if decision.skip_reason:
-                results.append({**location, "outcome": "time_unresolved",
+                outcome = ("context_insufficient"
+                           if decision.skip_reason == "GOVERNANCE_BUDGET_EXCEEDED"
+                           else "time_unresolved")
+                results.append({**location, "outcome": outcome,
                                 "reason": decision.skip_reason,
                                 "reason_code": decision.skip_reason})
                 continue
@@ -1396,6 +1408,12 @@ def _process_task(
                      "action_taken": "reported_to_extractor"}
                     for message in task_input.targets for gap in message.get("context_gaps", [])
                 ] + [
+                    {"code": "HISTORY_TRUNCATED", "slice_id": index,
+                     "message_id": m["message_id"], "end_char": m["end_char"],
+                     "action_taken": "sent_prefix"}
+                    for index, current in enumerate(slices) for m in current["history"]
+                    if m.get("truncated")
+                ] + [
                     {"code": "SOURCE_TIME_AFTER_RECEIPT", "target_message_id": m["message_id"],
                      "occurred_at": m["occurred_at"], "received_at": m["received_at"],
                      "action_taken": "preserved_explicit_source_time"}
@@ -1464,6 +1482,10 @@ def _process_task(
                                           related_memories=current["related_memories"])
                 if selected is None:
                     current["related_memories"] = []
+                    selected = select_history(current["targets"], current["history"],
+                                              system=EXTRACTION_PROMPT,
+                                              limit=budget.input_tokens - budget.output_tokens)
+                current["history"] = selected or []
                 execution.pop("prepared_slice", None)
                 _save_execution(task, execution)
         slice_input = replace(task_input, targets=current["targets"], history=current["history"])
@@ -1473,13 +1495,19 @@ def _process_task(
             facts = []
             assessments = [ExtractionAssessment(
                 message_id=m["message_id"], outcome="context_insufficient",
-                reason=current["context_error"], reason_code="CONTEXT_BUDGET_EXCEEDED",
+                reason=current["context_error"], reason_code=current["context_error"],
             ) for m in current["targets"]]
+        elif current.get("context_only"):
+            facts = []
         elif prepared and prepared["index"] == index:
             facts = [ExtractedFact.model_validate(value) for value in prepared["facts"]]
             assessments = [ExtractionAssessment.model_validate(value)
                            for value in prepared.get("assessments", [])]
         else:
+            if extraction_size(EXTRACTION_PROMPT, slice_input.targets, slice_input.history,
+                               current.get("related_memories")) > (
+                                   budget.input_tokens - budget.output_tokens):
+                raise WorkerInputError("extraction input exceeds model budget")
             consume_call()
             try:
                 extract_with_outcomes = getattr(fact_model, "extract_with_outcomes", None)
@@ -1535,6 +1563,11 @@ def _process_task(
                     _save_execution(task, execution)
                 continue
             validate_fact_evidence(facts, slice_input.targets, slice_input.history)
+            output = guard_history_evidence(
+                ExtractionOutput(facts=facts, assessments=assessments),
+                slice_input.targets, slice_input.history,
+            )
+            facts, assessments = output.facts, output.assessments
             facts = [
                 normalize_fact_scenes(
                     session_factory,
@@ -1738,10 +1771,11 @@ def run_once(
                 duplicate_threshold=duplicate_threshold,
                 budget=budget,
             )
-        except WorkerInputError as exc:
+        except (WorkerInputError, InputLimitError) as exc:
             with session_factory.begin() as session:
                 task = session.get(MemoryTask, task_id)
-                changed = exc.committed_changes or (task.payload.get("execution") or {}).get(
+                changed = getattr(exc, "committed_changes", False) or (
+                    task.payload.get("execution") or {}).get(
                     "changed", False
                 )
                 finish_task(

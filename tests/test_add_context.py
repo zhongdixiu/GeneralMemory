@@ -236,7 +236,7 @@ def test_future_batch_does_not_enter_frozen_task_input(worker_context, engine):
     _run(engine, BoundaryModel())
 
 
-def test_empty_tool_call_reaches_model_and_is_marked_processed(worker_context, engine):
+def test_empty_tool_call_is_processed_without_model_and_remains_context(worker_context, engine):
     client, tenant = worker_context
     calls = [{"tool_call_id": "call", "tool_name": "lookup", "arguments": {"q": "x"}}]
     task_id = _post(client, key="tool-call", messages=[
@@ -244,17 +244,27 @@ def test_empty_tool_call_reaches_model_and_is_marked_processed(worker_context, e
 
     class ToolCallModel(FakeFactModel):
         def extract(self, *, targets, history):
-            assert len(targets) == 1 and targets[0]["tool_calls"] == calls
-            assert targets[0]["content"] == ""
-            return []
+            raise AssertionError("auxiliary-only batch must not call the extractor")
 
     _run(engine, ToolCallModel())
     with Session(engine) as session:
         task = session.get(MemoryTask, task_id)
         assert task.status == "succeeded"
+        assert task.payload["execution"]["model_calls"] == 0
         source = session.scalars(select(SourceRecord).where(
             SourceRecord.tenant_id == tenant, SourceRecord.message_id == "call-message")).one()
         assert source.processed_version == source.version
+
+    _post(client, key="after-tool-call", messages=[
+        _message("user-after-call", "我喜欢简洁回复。", reply_to_message_id="call-message")])
+
+    class ContextModel(FakeFactModel):
+        def extract(self, *, targets, history):
+            call = next(m for m in history if m["message_id"] == "call-message")
+            assert call["tool_calls"] == calls and call["content"] == ""
+            return super().extract(targets=targets, history=history)
+
+    _run(engine, ContextModel())
 
 
 def test_budget_insufficiency_does_not_stop_independent_target(worker_context, engine):
@@ -265,9 +275,18 @@ def test_budget_insufficiency_does_not_stop_independent_target(worker_context, e
     ], history=[_message("huge", "必要上下文" * 3000, "assistant")])
 
     class IndependentModel(FakeFactModel):
-        def extract(self, *, targets, history):
-            assert [m["message_id"] for m in targets] == ["independent"]
-            return super().extract(targets=targets, history=history)
+        def extract_with_outcomes(self, *, targets, history):
+            assert [m["message_id"] for m in targets] == ["dependent", "independent"]
+            assert all(len(m["content"]) <= 300 for m in history)
+            return ExtractionOutput(
+                facts=[ExtractedFact(memory="用户喜欢简洁回复。", message_ids=["independent"])],
+                assessments=[
+                    ExtractionAssessment(message_id="dependent", outcome="context_insufficient",
+                                         reason="缺少完整方案", reason_code="MISSING_REFERENT"),
+                    ExtractionAssessment(message_id="independent", outcome="evaluated",
+                                         reason="独立偏好"),
+                ],
+            )
 
     _run(engine, IndependentModel())
     with Session(engine) as session:
@@ -276,6 +295,138 @@ def test_budget_insufficiency_does_not_stop_independent_target(worker_context, e
         outcomes = task.payload["execution"]["processing_results"]
         assert {(r["message_id"], r["outcome"]) for r in outcomes} == {
             ("dependent", "context_insufficient"), ("independent", "added")}
+
+
+def test_truncated_history_cannot_support_persisted_fact(worker_context, engine):
+    from test_fact_governance import _run as _run_with_budget
+
+    from memory_cmic.extraction_input import ExtractionBudget
+
+    client, tenant = worker_context
+    original = "建议简短回复。" + "x" * 20000
+    task_id = _post(client, key="prefix-evidence", messages=[
+        _message("user", "以后回复都简短。", reply_to_message_id="proposal")], history=[
+        _message("proposal", original, "assistant")])
+
+    class PrefixModel(FakeFactModel):
+        def extract(self, *, targets, history):
+            assert history[0]["truncated"] and history[0]["content"] == original[:300]
+            return [ExtractedFact(memory="用户要求简短回复。", message_ids=["proposal", "user"])]
+
+    _run_with_budget(engine, PrefixModel(), budget=ExtractionBudget(input_tokens=14000))
+    with Session(engine) as session:
+        assert session.get(MemoryTask, task_id).status == "succeeded"
+        source = session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant, SourceRecord.message_id == "proposal")).one()
+        assert source.raw_content == original
+        assert session.scalar(select(MemoryEvidence).where(
+            MemoryEvidence.tenant_id == tenant)) is None
+        target = session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant, SourceRecord.message_id == "user")).one()
+        assert target.processed_version is None
+        results = session.get(MemoryTask, task_id).payload["execution"]["processing_results"]
+        assert results[0]["reason_code"] == "HISTORY_TRUNCATED"
+
+
+def test_governance_overflow_does_not_block_independent_fact_or_complete_skipped_source(
+    worker_context, engine
+):
+    client, tenant = worker_context
+    _add(client, key="large-candidate-seed", message_id="seed", content="用户偏好清淡饮食。")
+    _run(engine, FakeFactModel())
+    with Session(engine) as session:
+        existing = session.scalars(select(MemoryItem).where(MemoryItem.tenant_id == tenant)).one()
+        existing_id = existing.id
+        # Simulate a long legacy memory that remains eligible for comparison.
+        existing.content = "既有记忆的很长内容。" * 700
+        session.commit()
+    task_id = _post(client, key="governance-overflow", messages=[
+        _message("needs-governance", "我喜欢清淡饮食。"),
+        _message("independent-email", "以后邮件都简短。"),
+    ])
+
+    class OverflowModel(FakeFactModel):
+        def extract(self, *, targets, history):
+            return [ExtractedFact(memory=m["content"], message_ids=[m["message_id"]],
+                                  business_domains=["email"] if "邮件" in m["content"] else None)
+                    for m in targets]
+
+        def resolve(self, **kwargs):
+            raise AssertionError("over-budget governance must not call the model")
+
+    _run(engine, OverflowModel())
+    with Session(engine) as session:
+        task = session.get(MemoryTask, task_id)
+        assert task.status == "succeeded" and len(task.result_json) == 1
+        assert session.get(MemoryItem, existing_id).status == "active"
+        outcomes = {r["message_id"]: r for r in task.payload["execution"]["processing_results"]}
+        assert outcomes["needs-governance"]["reason_code"] == "GOVERNANCE_BUDGET_EXCEEDED"
+        assert outcomes["independent-email"]["outcome"] == "added"
+        sources = {s.message_id: s for s in session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant)).all()}
+        assert sources["needs-governance"].processed_version is None
+        independent = sources["independent-email"]
+        assert independent.processed_version == independent.version
+
+
+def test_long_current_message_recovery_is_not_blocked_by_its_own_history(worker_context, engine):
+    from test_fact_governance import _run as _run_with_budget
+
+    from memory_cmic.extraction_input import ExtractionBudget
+    from memory_cmic.providers import OutputLimitError
+
+    client, tenant = worker_context
+    task_id = _add(client, key="long-user-recovery", message_id="long-user", content="甲" * 5000)
+
+    class RecoveryModel(FakeFactModel):
+        truncated_once = False
+
+        def extract(self, *, targets, history):
+            if not self.truncated_once:
+                self.truncated_once = True
+                raise OutputLimitError("synthetic output truncation")
+            return [ExtractedFact(memory="用户偏好简洁表达。", message_ids=[m["message_id"]])
+                    for m in targets]
+
+    _run_with_budget(engine, RecoveryModel(), budget=ExtractionBudget(input_tokens=20000))
+    with Session(engine) as session:
+        task = session.get(MemoryTask, task_id)
+        assert task.status == "succeeded"
+        execution = task.payload["execution"]
+        assert any(m.get("truncated") and m["message_id"] in
+                   {t["message_id"] for t in current["targets"]}
+                   for current in execution["slices"] for m in current["history"])
+        assert not any(r.get("reason_code") == "HISTORY_TRUNCATED"
+                       for r in execution["processing_results"])
+        source = session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant, SourceRecord.message_id == "long-user")).one()
+        assert source.processed_version == source.version
+
+
+def test_oversized_target_metadata_does_not_abort_other_messages(worker_context, engine):
+    client, tenant = worker_context
+    attachments = [{"file_id": f"file{i}", "mime_type": "application/pdf",
+                    "name": "n" * 256, "sha256": "a" * 64} for i in range(20)]
+    task_id = _post(client, key="large-metadata", messages=[
+        _message("attachments", "整理这些附件。", metadata={"attachments": attachments}),
+        _message("independent", "我喜欢米粉。"),
+    ])
+
+    class IndependentModel(FakeFactModel):
+        def extract(self, *, targets, history):
+            assert [m["message_id"] for m in targets] == ["independent"]
+            return super().extract(targets=targets, history=history)
+
+    _run(engine, IndependentModel())
+    with Session(engine) as session:
+        task = session.get(MemoryTask, task_id)
+        assert task.status == "succeeded" and len(task.result_json) == 1
+        outcomes = {r["message_id"]: r for r in task.payload["execution"]["processing_results"]}
+        assert outcomes["attachments"]["reason_code"] == "TARGET_METADATA_BUDGET_EXCEEDED"
+        assert outcomes["independent"]["outcome"] == "added"
+        source = session.scalars(select(SourceRecord).where(
+            SourceRecord.tenant_id == tenant, SourceRecord.message_id == "attachments")).one()
+        assert source.processed_version is None and len(source.metadata_json["attachments"]) == 20
 
 
 def test_no_durable_value_marks_evaluated_source_complete(worker_context, engine):

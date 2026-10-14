@@ -9,6 +9,12 @@ from zoneinfo import ZoneInfo
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from memory_cmic.model_input import (
+    compact_json,
+    extraction_payload,
+    governance_payload,
+    request_size,
+)
 from memory_cmic.ttl import RetentionKind
 
 
@@ -20,10 +26,15 @@ class OutputLimitError(ProviderError):
     pass
 
 
-PROMPT_VERSION = "p02-v12-receipt-content-time"
+class InputLimitError(ProviderError):
+    pass
+
+
+PROMPT_VERSION = "p02-v15-maintainable-facts"
 
 EXTRACTION_PROMPT = (
-    "Extract atomic facts newly stated or explicitly confirmed by target user messages, "
+    "Extract the smallest independently maintainable statements newly stated or explicitly "
+    "confirmed by target user messages, "
     "including temporary plans. FIRST check referents and required date anchors: missing "
     "context is context_insufficient, NEVER no_durable_value or an unresolved fact. "
     "'记住这个' without supporting context is MISSING_REFERENT, not a greeting or no value. "
@@ -32,7 +43,13 @@ EXTRACTION_PROMPT = (
     "even if it has no standalone lasting value. '确切说是这周六' refines the supported "
     "plan's date; '这周末还是不去了，要加班' cancels that plan, preserving object/date/reason. "
     "Use related_memories only as state hints; cite supporting raw messages, never memory IDs. "
-    "Write each memory as one short, standalone declarative sentence with an explicit "
+    "Split facts when each can be independently corrected or become invalid without changing "
+    "the meaning of the others. Shared source or topic alone does not justify merging. "
+    "Preserve necessary relationships, negation and its scope, conditions and exceptions; "
+    "never split them into fragments that lose or broaden the original meaning. "
+    "For example, keep '用户要求周报简洁，但风险说明详细。' as one qualified requirement; "
+    "do not extract an unconditional preference for brevity. "
+    "Write each memory as a concise, standalone declarative statement with an explicit "
     "subject, predicate and object or complement. For facts about the speaker, use 用户 "
     "as the Chinese subject (the user in English), not 我, 我们, 你, I, we or you. "
     "Resolve pronouns, demonstratives and omitted subjects using target messages and history. "
@@ -49,6 +66,9 @@ EXTRACTION_PROMPT = (
     "A confirmation must cite the proposal/question that gives it meaning. "
     "Attachment references are not readable attachment contents. Never infer user facts from "
     "assistant/system/tool alone. "
+    "Omitted history means no supplied context. History with truncated=true shows only a "
+    "prefix: never assume its missing conditions or treat a confirmation as acceptance of an "
+    "entire unseen proposal. Report context_insufficient when the omitted context is needed. "
     "Business labels describe applicable scenarios, not source systems or mentioned topics. "
     "Use communication for SMS, phone calls and instant messaging (excluding email); "
     "email for reading, writing, replying, processing and organizing email; "
@@ -123,6 +143,12 @@ EXTRACTION_PROMPT = (
 )
 
 GOVERNANCE_PROMPT = (
+    "Merge candidate_defaults into each candidate (candidate fields override defaults). "
+    "For each non-null candidate statement_order, merge statement_order_defaults into it. "
+    "Targets are the user messages cited by fact.message_ids; their content is the verbatim "
+    "source for corrections. For an undated candidate, shared_source says whether its stored "
+    "evidence shares a message with the fact; IDs themselves are omitted. "
+    "Candidate IDs m0,m1,... are request-local: return these IDs unchanged. "
     "Resolve a new user fact against same-subject candidates. First compare applicability: "
     "business labels are semantic scenario tags; different strings can mean the same scenario. "
     "A FUTURE applicability rule is ADD with its future condition; do not immediately "
@@ -137,8 +163,8 @@ GOVERNANCE_PROMPT = (
     "ADD has no IDs. DUPLICATE has exactly one active ID and requires identical durable meaning "
     "and temporal applicability, not mere similarity. When supplied, "
     "candidate.explicit_expired_at is an explicit MEMORY retention deadline; "
-    "candidate.expired_at may instead be a system TTL and must not prevent DUPLICATE solely "
-    "because the incoming fact has no stated deadline. Event dates and applicability periods "
+    "system TTL is omitted and must not prevent DUPLICATE solely because the incoming fact "
+    "has no stated deadline. Event dates and applicability periods "
     "are in memory text; distinct historical experiences can coexist. SUPERSEDE requires "
     "explicit user correction, refinement, cancellation, "
     "current-state "
@@ -298,7 +324,7 @@ class ExtractionAssessment(BaseModel):
     reason: str = Field(min_length=1, max_length=512)
     reason_code: Literal[
         "MISSING_REFERENT", "MISSING_DATE_ANCHOR", "CONTEXT_BUDGET_EXCEEDED",
-        "UNKNOWN_STATEMENT_ORDER",
+        "UNKNOWN_STATEMENT_ORDER", "HISTORY_TRUNCATED", "TARGET_METADATA_BUDGET_EXCEEDED",
     ] | None = None
 
 
@@ -307,6 +333,28 @@ class ExtractionOutput(BaseModel):
 
     facts: list[ExtractedFact]
     assessments: list[ExtractionAssessment] = Field(default_factory=list)
+
+
+def guard_history_evidence(output: ExtractionOutput, targets, history) -> ExtractionOutput:
+    # A current fragment and its overlap share an ID. A citation to the current
+    # fragment must not be mistaken for citing a truncated earlier message.
+    target_ids = {m["message_id"] for m in targets}
+    truncated = {m["message_id"] for m in history
+                 if m.get("truncated") and m["message_id"] not in target_ids}
+    blocked = [fact for fact in output.facts if truncated.intersection(fact.message_ids)]
+    if not blocked:
+        return output
+    user_ids = {m["message_id"] for m in targets if m["role"] == "user"}
+    affected = user_ids.intersection(mid for fact in blocked for mid in fact.message_ids)
+    assessments = [a for a in output.assessments if a.message_id not in affected]
+    assessments.extend(ExtractionAssessment(
+        message_id=mid, outcome="context_insufficient", reason_code="HISTORY_TRUNCATED",
+        reason="Fact cites truncated history; complete supporting context is required.",
+    ) for mid in sorted(affected))
+    return ExtractionOutput(
+        facts=[fact for fact in output.facts if not truncated.intersection(fact.message_ids)],
+        assessments=assessments,
+    )
 
 
 def validate_fact_evidence(
@@ -400,12 +448,13 @@ class QwenFactModel:
         )
 
     def _json_completion(self, system: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.last_usage = None
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    {"role": "user", "content": compact_json(payload)},
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
@@ -425,6 +474,13 @@ class QwenFactModel:
         except Exception as exc:
             raise ProviderError(f"Qwen request or output failed: {exc}") from exc
 
+    def _add_completion(self, system, payload):
+        self.last_usage = None
+        size = request_size(system, payload)
+        if size > self.input_limit:
+            raise InputLimitError(f"model input exceeds budget: {size} > {self.input_limit} bytes")
+        return self._json_completion(system, payload)
+
     def extract(
         self, *, targets: list[dict[str, Any]], history: list[dict[str, Any]]
     ) -> list[ExtractedFact]:
@@ -435,20 +491,9 @@ class QwenFactModel:
         related_memories: list[dict[str, Any]] | None = None,
     ) -> ExtractionOutput:
         try:
-            def model_messages(messages):
-                return [
-                    {key: value for key, value in {**message, "occurred_at": None}.items()
-                     if key != "received_at"}
-                    if message.get("timestamp_origin") == "adapter_observed" or
-                    message.get("occurred_at") is None else message
-                    for message in messages
-                ]
-
-            raw = self._json_completion(EXTRACTION_PROMPT, {
-                "history": model_messages(history), "targets": model_messages(targets),
-                **({"related_memories": related_memories} if related_memories else {}),
-                "timezone": "Asia/Shanghai",
-            })
+            raw = self._add_completion(
+                EXTRACTION_PROMPT, extraction_payload(targets, history, related_memories)
+            )
             required = {
                 "business_domains",
                 "project_limited",
@@ -479,7 +524,7 @@ class QwenFactModel:
                 raise ProviderError("evaluated assessment must have an extracted fact")
             if assessment.outcome == "context_insufficient" and assessment.reason_code is None:
                 assessment.reason_code = "MISSING_REFERENT"
-        return output
+        return guard_history_evidence(output, targets, history)
 
     def select_applicable(
         self, *, query: str, business_domain: str, candidates: list[dict[str, Any]]
@@ -560,13 +605,9 @@ class QwenFactModel:
     ) -> GovernanceDecision:
         try:
             output = GovernanceDecision.model_validate(
-                self._json_completion(
+                self._add_completion(
                     GOVERNANCE_PROMPT,
-                    {
-                        "fact": fact.model_dump(mode="json"),
-                        "candidates": candidates,
-                        "targets": targets,
-                    },
+                    governance_payload(fact.model_dump(mode="json"), candidates, targets),
                 )
             )
         except ValidationError as exc:
@@ -574,8 +615,12 @@ class QwenFactModel:
         referenced = set(output.memory_ids)
         if output.historical_before_id:
             referenced.add(output.historical_before_id)
-        if not referenced.issubset({candidate["id"] for candidate in candidates}):
+        memory_ids = {f"m{index}": candidate["id"] for index, candidate in enumerate(candidates)}
+        if not referenced.issubset(memory_ids):
             raise ProviderError("governance output cites an unknown memory ID")
+        output.memory_ids = [memory_ids[mid] for mid in output.memory_ids]
+        if output.historical_before_id:
+            output.historical_before_id = memory_ids[output.historical_before_id]
         return output
 
 

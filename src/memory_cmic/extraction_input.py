@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from memory_cmic.model_input import compact_json, extraction_size, model_message
+
 
 @dataclass(frozen=True)
 class ExtractionBudget:
@@ -52,18 +54,46 @@ def required_history(targets, history):
 
 def select_history(targets, history, *, system, limit, related_memories=None):
     related_memories = related_memories or []
-    required = required_history(targets, history)
+    history = [m for m in history if m["content"].strip() or m.get("tool_calls")
+               or m.get("attachments")]
+    linked = {id(m) for m in required_history(targets, history)}
     support_ids = {mid for memory in related_memories for mid in memory["message_ids"]}
-    required = [m for m in history if m in required or m["message_id"] in support_ids]
-    extra = {"related_memories": related_memories} if related_memories else {}
-    chosen = {id(m) for m in required}
-    if input_size(system, {"targets": targets, "history": required, **extra}) > limit:
+    pool = [m for index, m in enumerate(history) if index >= len(history) - 30
+            or id(m) in linked or m["message_id"] in support_ids]
+    base = extraction_size(system, targets, [], related_memories)
+    if base > limit:
         return None
-    for message in reversed(history[-30:]):
-        proposed = [m for m in history if id(m) in chosen or m is message]
-        if input_size(system, {"targets": targets, "history": proposed, **extra}) <= limit:
-            chosen.add(id(message))
-    return [m for m in history if id(m) in chosen]
+    # Each history message is serialized once per pass. Adding a message needs only
+    # integer arithmetic; never serialize the growing request for every candidate.
+    sizes = [len(compact_json(model_message(m)).encode()) for m in pool]
+    overhead = len(',"history":[]')
+    if not pool or base + overhead + sum(sizes) + len(pool) - 1 <= limit:
+        chosen = pool
+    else:
+        shortened = []
+        for index, message in enumerate(pool):
+            if len(message["content"]) > 300:
+                start = message.get("start_char", 0)
+                message = {**message, "content": message["content"][:300],
+                           "start_char": start, "end_char": start + 300, "truncated": True}
+                sizes[index] = len(compact_json(model_message(message)).encode())
+            shortened.append(message)
+        priority = sorted(range(len(pool)), key=lambda i: (
+            pool[i]["message_id"] in support_ids, id(pool[i]) in linked, i), reverse=True)
+        selected = set()
+        used = base
+        for index in priority:
+            cost = sizes[index] + (1 if selected else overhead)
+            if used + cost <= limit:
+                selected.add(index)
+                used += cost
+        chosen = [m for i, m in enumerate(shortened) if i in selected]
+    # Optional state hints still require their full raw support. Discard the hint
+    # instead of blocking the target or presenting an incomplete support group.
+    complete_ids = {m["message_id"] for m in [*targets, *chosen] if not m.get("truncated")}
+    if not support_ids.issubset(complete_ids):
+        return None
+    return chosen
 
 
 def build_slices(
@@ -82,20 +112,35 @@ def build_slices(
         # Repeated/previous messages may supply context, never a duplicate target identity.
         prior = [m for m in prior if m["message_id"] != message["message_id"]]
         content = message["content"]
+        if message["role"] != "user":
+            # Auxiliary messages cannot independently yield user facts. Keep their
+            # entire source for later context, without spending extraction calls.
+            auxiliary = {**message, "start_char": 0, "end_char": len(content)}
+            if slices and slices[-1].get("context_only"):
+                slices[-1]["targets"].append(auxiliary)
+            else:
+                slices.append({"targets": [auxiliary], "history": [], "split_depth": 0,
+                               "context_only": True})
+            prior.append(auxiliary)
+            continue
         start = 0
         while start < len(content) or (not content and start == 0):
             minimal = {**message, "content": content[start:start + 1],
                        "start_char": start, "end_char": min(start + 1, len(content))}
-            if input_size(system, {"targets": [minimal], "history": []}) > limit:
-                raise ValueError("message metadata cannot fit in the model input budget")
-            required = required_history([minimal], prior)
-            if input_size(system, {"targets": [minimal], "history": required}) > limit:
+            if extraction_size(system, [minimal], []) > limit:
                 slices.append({
                     "targets": [{**message, "content": content[start:], "start_char": start,
                                  "end_char": len(content)}],
-                    "history": [], "split_depth": 0, "context_error": "CONTEXT_BUDGET_EXCEEDED",
+                    "history": [], "split_depth": 0,
+                    "context_error": "TARGET_METADATA_BUDGET_EXCEEDED",
                 })
+                prior.append({**message, "start_char": 0, "end_char": len(content)})
                 break
+            # Long historical replies do not prevent extraction of a new target.
+            # Reserve only the bounded overlap when splitting this target itself.
+            required = [m for m in prior if m.get("continuation")]
+            if extraction_size(system, [minimal], required) > limit:
+                required = []
             # Raw evidence takes priority over optional state hints. Keep complete support groups.
             related = []
             for memory in related_memories:
@@ -108,13 +153,16 @@ def build_slices(
             support_ids = {mid for memory in related for mid in memory["message_ids"]}
             required = [m for m in prior if m in required or m["message_id"] in support_ids]
             extra = {"related_memories": related} if related else {}
-            low, high, end = start + 1, len(content), start
+            full = {**message, "content": content[start:], "start_char": start,
+                    "end_char": len(content)}
+            end = (len(content) if extraction_size(system, [full], required, related) <= limit
+                   else start)
+            low, high = start + 1, (len(content) if end == start else start)
             while low <= high:
                 midpoint = (low + high) // 2
                 fragment = {**message, "content": content[start:midpoint],
                             "start_char": start, "end_char": midpoint}
-                if input_size(system, {"targets": [fragment],
-                                       "history": required, **extra}) <= limit:
+                if extraction_size(system, [fragment], required, related) <= limit:
                     end, low = midpoint, midpoint + 1
                 else:
                     high = midpoint - 1
@@ -127,7 +175,8 @@ def build_slices(
             selected = select_history([fragment], prior, system=system, limit=limit,
                                       related_memories=related)
             current = {"targets": [fragment], "history": selected, "split_depth": 0, **extra}
-            if slices and not slices[-1].get("context_error"):
+            if (slices and not slices[-1].get("context_error")
+                    and not slices[-1].get("context_only")):
                 previous = slices[-1]
                 if message["message_id"] not in {m["message_id"] for m in previous["targets"]}:
                     merged = [*previous["targets"], fragment]
@@ -157,7 +206,7 @@ def build_slices(
                 prior.append({**fragment, "content": content[overlap_start:end],
                               "start_char": overlap_start, "continuation": True})
             else:
-                prior.append(fragment)
+                prior.append({**message, "start_char": 0, "end_char": len(content)})
             start = end
     return slices
 
