@@ -2,6 +2,7 @@
 
 将 GeneralMemory 记忆引擎通过标准 MCP 协议暴露给各类智能体（Hermes、AgentScope、Claude Desktop、Cursor 等）。
 
+
 ## 架构
 
 ```
@@ -25,6 +26,10 @@
 MCP Server 直连数据库，不经 HTTP 中间层，与 memory-platform 的 Gateway 模式不同。
 
 ---
+
+
+
+## 文件存放位置
 
 将mcp-server文件夹放在GeneralMemory-2.5.0/src/memory_cmic/路径下，并更新pyproject.toml文件（里面新增了mcp库）
 
