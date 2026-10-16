@@ -29,6 +29,8 @@ EVENT_LABELS = {
     "TTL_EXPIRED": "记忆到期",
     "TTL_CLASSIFIED_LONG_TERM": "将记忆归为长期保留",
     "PROFILE_REBUILT": "重建用户画像",
+    "PROFILE_CONFIG_CHANGED": "变更租户画像维度",
+    "PROFILE_DIMENSION_MIGRATION": "迁移画像维度配置",
     "ATOMIC_PROFILE_MIGRATION": "迁移旧画像属性",
     "GOVERNANCE_POLICY_CHANGED": "变更治理策略",
     "GOVERNANCE_MERGED": "合并并停用重复记忆",

@@ -101,20 +101,26 @@ Search 使用既有 SiliconFlow 配置：`SILICONFLOW_API_KEY`、`SILICONFLOW_BA
     {
       "id": "profile_example",
       "assertion_kind": "explicit",
-      "property_key": null,
+      "property_key": "communication",
       "property_value": "用户希望邮件回复简洁，但风险部分详细说明。",
       "value_type": "string",
       "business_domains": ["email"]
     }
-  ]
+  ],
+  "config_version": 1,
+  "applied_config_version": 1,
+  "status": "ready"
 }
 ```
 
 user_id 必填，1～128 字符。新增 assertion_kind=explicit/inferred；默认 include_inferred=false，仅返回明确画像，传入 include_inferred=true 才纳入有效推断画像。默认返回该用户全部业务范围的当前有效明确画像，不按来源 Agent、业务范围或任务 query 筛选，也不分页或按 Search 的 limit 截断。business_domains=null 表示通用，否则保留具体适用场景；调用方使用时必须遵守陈述和业务范围中的条件。
 
-自动画像为 property_key=null 的独立字符串陈述，不应转成以 key 为唯一索引的字典。显式固定属性继续返回原 property_key、property_value 和 value_type，兼容 JSON、列表、数字和布尔值。
+`0012_profile_dimensions` 起，property_key 为租户配置中的稳定维度 key，property_value 为非空字符串陈述。
+同维度允许多条，调用方应分组为数组，不能转换为 key 到单条记录的字典。新增 config_version、
+applied_config_version 和 status=ready/pending/failed；配置尚未应用时不输出旧配置画像。
+配置 API、默认维度和升级步骤见[租户画像维度配置运行说明](./租户画像维度配置运行说明.md)。
 
-读取递归检查画像状态、有效时间、依据类型、证据版本和原始来源；推断画像还核对准入指纹及已知冲突，相关依据变化后旧批准不继续生效。无画像返回 `{"profiles": []}`。此接口直接读取已有画像，不触发重建，不调用真实模型，也不要求 Search 的模型凭证已配置。
+读取递归检查画像状态、有效时间、依据类型、证据版本和原始来源；推断画像还核对准入指纹及已知冲突，相关依据变化后旧批准不继续生效。无画像时 profiles 为空数组，保留配置版本和更新状态。此接口直接读取已有画像，不触发重建，不调用真实模型，也不要求 Search 的模型凭证已配置。
 
 内部 `read_profiles()` 省略 business_domain 时读取全部；显式传入业务场景仍保留既有筛选行为。
 

@@ -24,7 +24,7 @@ from memory_cmic.providers import (
     ProviderError,
     QwenFactModel,
 )
-from memory_cmic.repositories import add_evidence_group, create_or_replace_profile
+from memory_cmic.repositories import add_evidence_group, create_profile
 from memory_cmic.retrieval import search_memories
 from memory_cmic.worker import run_once
 
@@ -253,7 +253,7 @@ def test_explicit_correction_invalidates_fact_and_derived_profile(worker_context
     with Session(engine) as session:
         old = _memories(session, tenant_id)[0]
         old_id = old.id
-        profile = create_or_replace_profile(
+        profile = create_profile(
             session,
             {
                 "id": f"profile_{tenant_id}",

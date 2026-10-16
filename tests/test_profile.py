@@ -17,19 +17,21 @@ import memory_cmic.profile as profile_module
 from memory_cmic.lifecycle import update_or_invalidate_source
 from memory_cmic.models import (
     GovernancePending,
+    GovernanceSubjectState,
     MemoryAuditLog,
     MemoryEvidence,
     MemoryItem,
     MemoryTask,
     ProfileProperty,
     SourceRecord,
+    TenantProfileConfig,
 )
 from memory_cmic.profile import ProfileProposal, enqueue_profile_rebuild, read_profiles, run_once
 from memory_cmic.providers import QwenFactModel
 from memory_cmic.repositories import (
     add_evidence_group,
     create_memory,
-    create_or_replace_profile,
+    create_profile,
     create_source,
 )
 from memory_cmic.task_queue import enqueue_task
@@ -42,13 +44,14 @@ class ExplicitProfileModel:
     def __init__(self):
         self.calls = 0
 
-    def extract(self, memories):
+    def extract(self, memories, *, dimensions):
         self.calls += 1
         proposals = []
         for memory in memories:
             if "邮件回复简洁" in memory["content"]:
                 proposals.append(
                     ProfileProposal(
+                        property_key="communication",
                         memory_id=memory["id"],
                         value="用户希望邮件回复简洁",
                         quote="邮件回复简洁",
@@ -57,6 +60,7 @@ class ExplicitProfileModel:
             if "邮件回复详细" in memory["content"]:
                 proposals.append(
                     ProfileProposal(
+                        property_key="communication",
                         memory_id=memory["id"],
                         value="用户希望邮件回复详细",
                         quote="邮件回复详细",
@@ -66,9 +70,12 @@ class ExplicitProfileModel:
 
 
 class VerbatimProfileModel:
-    def extract(self, memories):
+    def extract(self, memories, *, dimensions):
         return [
-            ProfileProposal(memory_id=m["id"], value=m["content"], quote=m["content"])
+            ProfileProposal(
+                property_key="communication", memory_id=m["id"],
+                value=m["content"], quote=m["content"],
+            )
             for m in memories
         ]
 
@@ -81,7 +88,7 @@ def _drain_profile(factory, tenant_id, model):
                 select(MemoryTask.id)
                 .where(
                     MemoryTask.tenant_id == tenant_id,
-                    MemoryTask.task_type == "profile_rebuild",
+                    MemoryTask.task_type.in_(["profile_rebuild", "profile_config_apply"]),
                     MemoryTask.status.in_(["pending", "processing"]),
                     or_(
                         MemoryTask.payload["activation_only"].as_boolean().is_not(True),
@@ -140,12 +147,14 @@ def profile_context(engine):
     with engine.begin() as connection:
         for model in (
             MemoryAuditLog,
+            GovernanceSubjectState,
             GovernancePending,
             MemoryEvidence,
             MemoryTask,
             ProfileProperty,
             MemoryItem,
             SourceRecord,
+            TenantProfileConfig,
         ):
             connection.execute(delete(model).where(model.tenant_id == tenant_id))
 
@@ -211,14 +220,16 @@ def test_name_and_job_are_separate_sentence_properties(profile_context):
     factory, tenant_id = profile_context
 
     class IdentityModel:
-        def extract(self, memories):
+        def extract(self, memories, *, dimensions):
             return [
                 ProfileProposal(
+                    property_key="identity",
                     memory_id=memories[0]["id"],
                     value="用户叫大钟",
                     quote="用户名叫大钟",
                 ),
                 ProfileProposal(
+                    property_key="occupation",
                     memory_id=memories[0]["id"],
                     value="用户是算法研发",
                     quote="是一名算法研发",
@@ -244,7 +255,7 @@ def test_name_and_job_are_separate_sentence_properties(profile_context):
             session, tenant_id=tenant_id, user_id="user_profile", business_domain="email"
         )
         assert {p.property_value for p in profiles} == {"用户叫大钟", "用户是算法研发"}
-        assert all(p.property_key is None for p in profiles)
+        assert {p.property_key for p in profiles} == {"identity", "occupation"}
         assert session.get(ProfileProperty, legacy.id).status == "invalidated"
         assert all(
             session.scalar(
@@ -261,9 +272,10 @@ def test_output_requirements_have_independent_basis(profile_context):
     factory, tenant_id = profile_context
 
     class RequirementsModel:
-        def extract(self, memories):
+        def extract(self, memories, *, dimensions):
             return [
                 ProfileProposal(
+                    property_key="communication",
                     memory_id=memory["id"],
                     value=f"用户{memory['content']}",
                     quote=memory["content"],
@@ -286,7 +298,7 @@ def test_output_requirements_have_independent_basis(profile_context):
             "用户写项目周报时先写结论",
             "用户写项目复盘时先写结论",
         }
-        assert all(row.property_key is None and row.value_type == "string" for row in rows)
+        assert all(row.property_key is not None and row.value_type == "string" for row in rows)
         edges = session.scalars(
             select(MemoryEvidence).where(
                 MemoryEvidence.downstream_profile_id.in_([row.id for row in rows])
@@ -332,7 +344,7 @@ def test_rebuild_creates_grounded_profile_and_coalesces(profile_context):
             session, tenant_id=tenant_id, user_id="user_profile", business_domain="email"
         )
         assert len(rows) == 1
-        assert rows[0].property_key is None
+        assert rows[0].property_key == "communication"
         assert rows[0].property_value == "用户希望邮件回复简洁"
         basis = session.scalars(
             select(MemoryEvidence).where(
@@ -455,12 +467,12 @@ def test_changed_evidence_during_model_call_does_not_commit_stale_profile(profil
         )
 
     class ChangingModel(ExplicitProfileModel):
-        def extract(self, memories):
+        def extract(self, memories, *, dimensions):
             with factory.begin() as session:
                 update_or_invalidate_source(
                     session, tenant_id=tenant_id, source_id=source.id, status="deleted"
                 )
-            return super().extract(memories)
+            return super().extract(memories, dimensions=dimensions)
 
     assert run_once(factory, worker_id="profile_test", model=ChangingModel())
     with factory() as session:
@@ -489,7 +501,7 @@ def test_complementary_preferences_and_conditions_are_preserved(profile_context)
             session, tenant_id=tenant_id, user_id="user_profile", business_domain="email"
         )
         assert {row.property_value for row in rows} == values
-        assert all(row.property_key is None for row in rows)
+        assert all(row.property_key is not None for row in rows)
 
 
 def test_duplicate_statement_keeps_independent_evidence(profile_context):
@@ -784,13 +796,14 @@ def test_profile_rebuild_uses_explicit_facts_from_multiple_agents(profile_contex
         assert {row.property_value for row in rows} == set(contents)
 
 
-def test_repository_creates_keyless_statements_independently(session):
+def test_repository_creates_same_dimension_statements_independently(session):
     rows = [
-        create_or_replace_profile(
+        create_profile(
             session,
             {
                 "id": f"prf_{uuid4().hex}",
-                "tenant_id": "tenant_keyless_repository",
+                "tenant_id": "tenant_dimension_repository",
+                "property_key": "communication",
                 "user_id": "u1",
                 "business_domains": ["email", "email"],
                 "property_value": value,
@@ -800,7 +813,7 @@ def test_repository_creates_keyless_statements_independently(session):
         )
         for value in ("用户希望邮件简洁", "用户希望邮件先给结论")
     ]
-    assert all(row.status == "active" and row.property_key is None for row in rows)
+    assert all(row.status == "active" and row.property_key is not None for row in rows)
     assert all(row.business_domains == ["email"] for row in rows)
 
 
@@ -816,9 +829,9 @@ def test_fact_expiring_during_model_call_cannot_commit_profile(profile_context, 
             return cls.current
 
     class ExpiringModel(VerbatimProfileModel):
-        def extract(self, memories):
+        def extract(self, memories, *, dimensions):
             Clock.current = initial_time + timedelta(hours=2)
-            return super().extract(memories)
+            return super().extract(memories, dimensions=dimensions)
 
     monkeypatch.setattr(profile_module, "datetime", Clock)
     with factory.begin() as session:

@@ -131,6 +131,7 @@ def test_expected_tables_extensions_and_indexes(connection: Connection) -> None:
         "source_record",
         "memory_item",
         "profile_property",
+        "tenant_profile_config",
         "memory_evidence",
         "memory_embedding",
         "memory_task",
@@ -167,7 +168,6 @@ def test_expected_tables_extensions_and_indexes(connection: Connection) -> None:
         "ix_memory_item_project_domains_gin",
         "ix_memory_embedding_active_hnsw",
         "ix_memory_task_pending_claim",
-        "uq_profile_property_active_key",
         "uq_evidence_active_supports",
         "uq_evidence_active_derives",
         "uq_evidence_active_profile_basis",
@@ -298,30 +298,30 @@ def test_evidence_rejects_cross_tenant_source_link(connection: Connection) -> No
         )
 
 
-def test_profile_has_one_active_unscoped_property(connection: Connection) -> None:
+def test_profile_has_multiple_active_values_in_one_dimension(connection: Connection) -> None:
     insert_profile(connection, profile_id="prf_1")
-    with pytest.raises(IntegrityError):
-        insert_profile(connection, profile_id="prf_2")
+    insert_profile(connection, profile_id="prf_2")
 
 
 @pytest.mark.parametrize("scope", [None, ["email"]])
-def test_profile_allows_multiple_keyless_statements(connection: Connection, scope) -> None:
-    insert_profile(connection, profile_id="prf_1", property_key=None, business_domains=scope)
-    insert_profile(connection, profile_id="prf_2", property_key=None, business_domains=scope)
+@pytest.mark.parametrize("key", [None, "", "   "])
+def test_active_profile_requires_dimension_key(connection: Connection, scope, key) -> None:
+    with pytest.raises(IntegrityError):
+        insert_profile(connection, profile_id="prf_1", property_key=key, business_domains=scope)
 
 
 @pytest.mark.parametrize(
     "value,value_type",
     [(["concise"], "list"), (1, "string"), ("concise", "number"), ("  ", "string")],
 )
-def test_keyless_profile_requires_nonempty_string(
+def test_profile_dimension_requires_nonempty_string(
     connection: Connection, value, value_type
 ) -> None:
     with pytest.raises(IntegrityError):
         insert_profile(
             connection,
             profile_id="prf_invalid",
-            property_key=None,
+            property_key="communication",
             property_value=value,
             value_type=value_type,
         )

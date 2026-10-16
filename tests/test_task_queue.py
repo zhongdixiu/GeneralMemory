@@ -15,7 +15,7 @@ from memory_cmic.models import (
     ProfileProperty,
     SourceRecord,
 )
-from memory_cmic.repositories import create_memory, create_or_replace_profile, create_source
+from memory_cmic.repositories import create_memory, create_profile, create_source
 from memory_cmic.task_queue import (
     apply_memory_content_if_current,
     claim_tasks,
@@ -447,7 +447,7 @@ def test_t19_tasks_and_audits_inherit_root_correlation(session: Session) -> None
             "created_by": "test_t19",
         },
     )
-    profile = create_or_replace_profile(
+    profile = create_profile(
         session,
         {
             "id": "prf_t19",

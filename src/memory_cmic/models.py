@@ -290,6 +290,13 @@ class ProfileProperty(Base):
             name="ck_profile_statement_value",
         ),
         CheckConstraint(
+            "status <> 'active' OR (property_key IS NOT NULL "
+            "AND length(btrim(property_key)) > 0 AND value_type = 'string' "
+            "AND jsonb_typeof(property_value) = 'string' "
+            "AND length(btrim(property_value #>> '{}')) > 0)",
+            name="ck_profile_active_dimension",
+        ),
+        CheckConstraint(
             "status IN ('active', 'invalidated', 'disputed', 'expired')",
             name="ck_profile_status",
         ),
@@ -324,16 +331,6 @@ class ProfileProperty(Base):
     )
 
 
-Index(
-    "uq_profile_property_active_key",
-    ProfileProperty.tenant_id,
-    ProfileProperty.user_id,
-    ProfileProperty.business_domains,
-    ProfileProperty.property_key,
-    unique=True,
-    postgresql_nulls_not_distinct=True,
-    postgresql_where=text("status = 'active' AND property_key IS NOT NULL"),
-)
 Index(
     "ix_profile_property_active_user",
     ProfileProperty.tenant_id,
@@ -503,7 +500,7 @@ class MemoryTask(Base):
         CheckConstraint(
             "task_type IN ('fact_extract', 'inference_derive', 'profile_rebuild', "
             "'dependency_recheck', 'vector_upsert', 'vector_delete', 'ttl_expire', "
-            "'consolidate')",
+            "'consolidate', 'profile_config_apply')",
             name="ck_task_type",
         ),
         CheckConstraint(
@@ -641,6 +638,21 @@ class GovernancePolicy(Base):
     )
 
 
+class TenantProfileConfig(Base):
+    __tablename__ = "tenant_profile_config"
+    __table_args__ = (
+        CheckConstraint("version > 0", name="ck_profile_config_version"),
+        CheckConstraint("jsonb_typeof(dimensions) = 'array'", name="ck_profile_config_dimensions"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    dimensions: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class GovernanceSubjectState(Base):
     __tablename__ = "governance_subject_state"
     __table_args__ = (PrimaryKeyConstraint("tenant_id", "user_id"),)
@@ -651,6 +663,7 @@ class GovernanceSubjectState(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     profile_input: Mapped[str | None] = mapped_column(String(64))
     profile_evaluated_input: Mapped[str | None] = mapped_column(String(64))
+    profile_config_version: Mapped[int | None] = mapped_column(Integer)
     profile_first_dirty_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     profile_last_change_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
@@ -756,7 +769,7 @@ class MemoryAuditLog(Base):
         ),
         CheckConstraint(
             "target_type IN ('source', 'memory', 'evidence', 'profile', 'embedding', 'task', "
-            "'governance_policy')",
+            "'governance_policy', 'profile_config')",
             name="ck_audit_target_type",
         ),
         CheckConstraint(

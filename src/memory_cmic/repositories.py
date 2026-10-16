@@ -51,27 +51,9 @@ def create_memory(session: Session, data: Mapping[str, Any]) -> MemoryItem:
     return memory
 
 
-def create_or_replace_profile(session: Session, data: Mapping[str, Any]) -> ProfileProperty:
+def create_profile(session: Session, data: Mapping[str, Any]) -> ProfileProperty:
     values = dict(data)
     values["business_domains"] = normalize_scope(values.get("business_domains"))
-    values.setdefault("property_key", None)
-    active = None
-    if values["property_key"] is not None:
-        active = session.scalars(
-            select(ProfileProperty).where(
-                ProfileProperty.tenant_id == values["tenant_id"],
-                ProfileProperty.user_id == values["user_id"],
-                ProfileProperty.business_domains == values["business_domains"],
-                ProfileProperty.property_key == values["property_key"],
-                ProfileProperty.status == "active",
-            )
-        ).one_or_none()
-    if active is not None:
-        active.status = "invalidated"
-        active.version += 1
-        session.flush()
-        values.setdefault("version", active.version)
-
     profile = ProfileProperty(**values)
     session.add(profile)
     session.flush()

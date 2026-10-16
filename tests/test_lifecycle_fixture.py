@@ -28,7 +28,7 @@ from memory_cmic.repositories import (
     EvidenceGroupDownstreamMismatch,
     add_evidence_group,
     create_memory,
-    create_or_replace_profile,
+    create_profile,
     normalize_scope,
 )
 from memory_cmic.retrieval import search_memories
@@ -204,28 +204,28 @@ def test_enqueue_task_returns_existing_idempotent_task(lifecycle_session: Sessio
     assert duplicate.id == fixture_task.id
 
 
-def test_create_or_replace_profile_invalidates_previous_active_value(
+def test_profile_dimension_allows_independent_active_values(
     lifecycle_session: Session,
 ) -> None:
-    replacement = create_or_replace_profile(
+    replacement = create_profile(
         lifecycle_session,
         {
             "id": "prf_orbit_email_reply_style_v2",
             "tenant_id": "tenant_orbit",
             "user_id": "user_ada",
             "business_domains": ["email", "email"],
-            "property_key": "pref.email.reply_style",
-            "property_value": {"format": "short_paragraph"},
-            "value_type": "object",
+            "property_key": "communication",
+            "property_value": "用户希望邮件使用简短段落。",
+            "value_type": "string",
             "confidence": 0.9,
             "status": "active",
             "effective_at": FIXTURE_NOW,
         },
     )
     previous = lifecycle_session.get(ProfileProperty, "prf_orbit_email_reply_style")
-    assert previous.status == "invalidated"
+    assert previous.status == "active"
     assert replacement.business_domains == ["email"]
-    assert replacement.version == 2
+    assert replacement.version == 1
 
 
 def test_or_groups_keep_memory_active_until_all_groups_are_incomplete(

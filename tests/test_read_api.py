@@ -24,9 +24,10 @@ from memory_cmic.models import (
     MemoryTaskSource,
     SourceRecord,
 )
-from memory_cmic.profile import read_profiles
+from memory_cmic.profile import _profile_state, read_profiles
+from memory_cmic.profile_config import ensure_profile_config
 from memory_cmic.providers import ProviderError
-from memory_cmic.repositories import add_evidence_group, create_memory, create_or_replace_profile
+from memory_cmic.repositories import add_evidence_group, create_memory, create_profile
 
 
 class FakeEmbedder:
@@ -162,9 +163,12 @@ def _inference(session, tenant, bases):
 
 
 def _profile(session, memory):
-    profile = create_or_replace_profile(session, {
+    config = ensure_profile_config(session, memory.tenant_id)
+    state = _profile_state(session, memory.tenant_id, memory.subject_id)
+    state.profile_config_version = config.version
+    profile = create_profile(session, {
         "id": f"profile_{uuid4().hex}", "tenant_id": memory.tenant_id,
-        "user_id": memory.subject_id, "property_key": None,
+        "user_id": memory.subject_id, "property_key": "communication",
         "property_value": memory.content, "value_type": "string",
         "business_domains": memory.business_domains, "effective_at": memory.effective_at,
     })
@@ -723,7 +727,8 @@ def test_profile_returns_all_scopes_and_keeps_internal_scope_filter(read_api, se
     assert responses[0].json() == responses[1].json()
     rows = responses[0].json()["profiles"]
     assert {row["id"] for row in rows} == expected
-    assert all(row["property_key"] is None and row["value_type"] == "string" for row in rows)
+    assert all(row["property_key"] == "communication" and row["value_type"] == "string"
+               for row in rows)
     assert {tuple(row["business_domains"] or []) for row in rows} == {(), ("email",), ("disk",)}
     filtered = read_profiles(session, tenant_id=tenant, user_id="user_1", business_domain="email")
     assert {profile.id for profile in filtered} == {profiles[0].id, profiles[1].id}
@@ -745,7 +750,7 @@ def test_profile_excludes_unusable_entries(read_api, session, change):
     session.flush()
     response = client.get("/api/v1/profiles", params={"user_id": "user_1"}, headers=_headers())
     assert response.status_code == 200
-    assert response.json() == {"profiles": []}
+    assert response.json()["profiles"] == []
 
 
 def test_read_endpoints_require_credentials_and_return_empty_for_missing_user(read_api):
@@ -758,7 +763,7 @@ def test_read_endpoints_require_credentials_and_return_empty_for_missing_user(re
     ).json() == {"results": []}
     assert client.get(
         "/api/v1/profiles", params={"user_id": "missing"}, headers=_headers()
-    ).json() == {"profiles": []}
+    ).json()["profiles"] == []
     assert client.post(
         "/api/v1/memories:search", json=body, headers=_headers("manager")
     ).status_code == 403

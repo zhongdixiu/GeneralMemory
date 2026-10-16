@@ -196,24 +196,6 @@ def apply_report(session: Session, records: list[dict]) -> list[dict]:
         ):
             outcomes.append({"id": row.id, "status": "ALIAS_CONFLICT"})
             continue
-        if (
-            item["target_type"] == "profile"
-            and row.status == "active"
-            and row.property_key is not None
-        ):
-            collision = session.scalars(
-                select(ProfileProperty).where(
-                    ProfileProperty.tenant_id == row.tenant_id,
-                    ProfileProperty.user_id == row.user_id,
-                    ProfileProperty.property_key == row.property_key,
-                    ProfileProperty.business_domains == proposed,
-                    ProfileProperty.status == "active",
-                    ProfileProperty.id != row.id,
-                )
-            ).first()
-            if collision:
-                outcomes.append({"id": row.id, "status": "PROFILE_COLLISION"})
-                continue
         missing = [
             name for name in proposed if session.get(BusinessScene, (row.tenant_id, name)) is None
         ]

@@ -44,7 +44,14 @@ from memory_cmic.lifecycle import (
     update_memory,
 )
 from memory_cmic.models import GovernanceOperation, GovernancePolicy, MemoryItem, MemoryTask
-from memory_cmic.profile import enqueue_profile_rebuild, read_profiles
+from memory_cmic.profile import enqueue_profile_rebuild, profile_update_status, read_profiles
+from memory_cmic.profile_config import (
+    ProfileConfigConflict,
+    ProfileConfigResult,
+    ProfileConfigUpdate,
+    ensure_profile_config,
+    update_profile_config,
+)
 from memory_cmic.providers import ProviderError, QwenFactModel, SiliconFlowEmbedder
 from memory_cmic.retrieval import search_task_memories
 from memory_cmic.settings import Settings
@@ -241,13 +248,35 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 502, "SEARCH_FAILED", "search provider request or output failed"
             ) from exc
 
+    @app.get("/api/v1/profile-config", response_model=ProfileConfigResult)
+    def get_profile_config(auth: AuthContext = Depends(authenticate)) -> ProfileConfigResult:
+        with session_factory.begin() as session:
+            config = ensure_profile_config(session, auth.tenant_id)
+            return ProfileConfigResult(version=config.version, dimensions=config.dimensions)
+
+    @app.put("/api/v1/profile-config", response_model=ProfileConfigResult)
+    def put_profile_config(
+        body: ProfileConfigUpdate, auth: AuthContext = Depends(manage_governance),
+    ) -> ProfileConfigResult:
+        try:
+            with session_factory.begin() as session:
+                config = update_profile_config(
+                    session, tenant_id=auth.tenant_id, body=body, operator_id=auth.caller_agent_id,
+                )
+                return ProfileConfigResult(version=config.version, dimensions=config.dimensions)
+        except ProfileConfigConflict as exc:
+            raise ApiError(409, "PROFILE_CONFIG_CONFLICT", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(422, "INVALID_PROFILE_CONFIG", str(exc)) from exc
+
     @app.get("/api/v1/profiles", response_model=ProfileResponse)
     def get_profiles(
         user_id: str = Query(min_length=1, max_length=128),
         include_inferred: bool = False,
         auth: AuthContext = Depends(read_user_memory),
     ) -> ProfileResponse:
-        with session_factory() as session:
+        with session_factory.begin() as session:
+            update_status = profile_update_status(session, auth.tenant_id, user_id)
             return ProfileResponse(profiles=[
                 ProfileResult(
                     id=p.id, property_key=p.property_key, property_value=p.property_value,
@@ -256,7 +285,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 )
                 for p in read_profiles(session, tenant_id=auth.tenant_id, user_id=user_id,
                                        include_inferred=include_inferred)
-            ])
+            ], **update_status)
 
     @app.post("/api/v1/profiles/rebuild", status_code=202)
     def rebuild_profiles(
@@ -281,7 +310,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         if target_id is not None and target_type is None:
             raise ApiError(422, "INVALID_AUDIT_FILTER", "target_id requires target_type")
         if target_type is not None and target_type not in {
-            "source", "memory", "evidence", "profile", "embedding", "task", "governance_policy"
+            "source", "memory", "evidence", "profile", "embedding", "task", "governance_policy",
+            "profile_config",
         }:
             raise ApiError(422, "INVALID_AUDIT_FILTER", "invalid target_type")
         if include_details and not auth.can_read_audit_content:

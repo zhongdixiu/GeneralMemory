@@ -267,14 +267,17 @@ class SearchResponse(BaseModel):
 class ProfileResult(BaseModel):
     id: str
     assertion_kind: Literal["explicit", "inferred"] = "explicit"
-    property_key: str | None
-    property_value: dict[str, Any] | list[Any] | str | int | float | bool
-    value_type: str
+    property_key: str
+    property_value: str
+    value_type: Literal["string"]
     business_domains: list[str] | None
 
 
 class ProfileResponse(BaseModel):
     profiles: list[ProfileResult]
+    config_version: int
+    applied_config_version: int | None
+    status: Literal["ready", "pending", "failed"]
 
 
 class ErrorInfo(BaseModel):

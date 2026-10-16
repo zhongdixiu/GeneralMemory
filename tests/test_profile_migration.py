@@ -14,6 +14,18 @@ from test_schema_constraints import insert_memory, insert_profile, insert_source
 from memory_cmic.models import Base
 
 
+@pytest.fixture
+def legacy_profile_schema(connection):
+    migration = run_path(
+        Path(__file__).parents[1] / "migrations" / "versions" / "0012_profile_dimensions.py"
+    )
+    with Operations.context(MigrationContext.configure(connection)):
+        migration["downgrade"]()
+    yield
+    with Operations.context(MigrationContext.configure(connection)):
+        migration["upgrade"]()
+
+
 def test_profile_schema_matches_metadata(connection):
     context = MigrationContext.configure(
         connection,
@@ -23,14 +35,72 @@ def test_profile_schema_matches_metadata(connection):
                 kind != "schema" or name in {None, connection.dialect.default_schema_name}
             ),
             "include_object": lambda obj, name, kind, reflected, compare_to: (
-                kind != "table" or name == "profile_property"
+                kind != "table" or name in {
+                    "profile_property", "tenant_profile_config", "governance_subject_state",
+                }
             ),
         },
     )
     assert compare_metadata(context, Base.metadata) == []
 
 
-def test_profile_governance_migration_coalesces_legacy_jobs_and_guards_downgrade(connection):
+def test_dimension_migration_preserves_history_and_rebuilds_all_legacy_profiles(connection):
+    migration = run_path(
+        Path(__file__).parents[1] / "migrations" / "versions" / "0012_profile_dimensions.py"
+    )
+    with Operations.context(MigrationContext.configure(connection)):
+        migration["downgrade"]()
+        insert_source(connection, source_id="src_dimension_migration")
+        insert_memory(connection, memory_id="mem_dimension_migration")
+        insert_profile(connection, profile_id="prf_keyless", property_key=None)
+        insert_profile(connection, profile_id="prf_fixed", property_key="residence")
+        insert_profile(
+            connection, profile_id="prf_legacy_object", property_key="pref.old",
+            property_value={"format": "list"}, value_type="object",
+        )
+        connection.execute(text("""
+            INSERT INTO memory_evidence (
+                id, tenant_id, relationship_type, evidence_group_id,
+                upstream_memory_id, downstream_profile_id, upstream_version
+            ) VALUES (
+                'evd_dimension', 'tenant_a', 'profile_basis', 'grp_dimension',
+                'mem_dimension_migration', 'prf_keyless', 1
+            )
+        """))
+        migration["upgrade"]()
+        assert connection.execute(text("""
+            SELECT id, status, version FROM profile_property
+            WHERE tenant_id = 'tenant_a' ORDER BY id
+        """)).all() == [
+            ("prf_fixed", "invalidated", 2), ("prf_keyless", "invalidated", 2),
+            ("prf_legacy_object", "invalidated", 2),
+        ]
+        assert connection.execute(text("""
+            SELECT property_value FROM profile_property WHERE id = 'prf_legacy_object'
+        """)).scalar_one() == {"format": "list"}
+        assert connection.execute(text("""
+            SELECT status FROM memory_evidence WHERE id = 'evd_dimension'
+        """)).scalar_one() == "invalidated"
+        version, dimensions = connection.execute(text("""
+            SELECT version, dimensions FROM tenant_profile_config WHERE tenant_id = 'tenant_a'
+        """)).one()
+        assert version == 1
+        assert {d["key"] for d in dimensions} >= {"education", "relationships", "other"}
+        assert connection.execute(text("""
+            SELECT payload FROM memory_task
+            WHERE tenant_id = 'tenant_a' AND task_type = 'profile_config_apply'
+        """)).scalar_one() == {"config_version": 1}
+        insert_profile(connection, profile_id="prf_dimension_1", property_key="education")
+        insert_profile(connection, profile_id="prf_dimension_2", property_key="education")
+        with pytest.raises(IntegrityError), connection.begin_nested():
+            insert_profile(connection, profile_id="prf_bad_dimension", property_key=None)
+        with pytest.raises(DBAPIError, match="require review"), connection.begin_nested():
+            migration["downgrade"]()
+
+
+def test_profile_governance_migration_coalesces_legacy_jobs_and_guards_downgrade(
+    connection, legacy_profile_schema,
+):
     migration = run_path(
         Path(__file__).parents[1] / "migrations" / "versions" / "0007_profile_governance.py"
     )
@@ -86,7 +156,9 @@ def test_profile_governance_migration_coalesces_legacy_jobs_and_guards_downgrade
             migration["downgrade"]()
 
 
-def test_atomic_profile_migration_invalidates_and_enqueues_rebuild(connection):
+def test_atomic_profile_migration_invalidates_and_enqueues_rebuild(
+    connection, legacy_profile_schema,
+):
     migration = run_path(
         Path(__file__).parents[1] / "migrations" / "versions" / "0005_atomic_profiles.py"
     )

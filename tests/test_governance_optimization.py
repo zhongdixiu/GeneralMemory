@@ -92,15 +92,18 @@ def seed_inference(session, tenant, bases):
 class EmptyModel:
     calls = 0
 
-    def extract(self, memories):
+    def extract(self, memories, *, dimensions):
         self.calls += 1
         return []
 
 
 class InferredModel:
-    def extract(self, memories):
+    def extract(self, memories, *, dimensions):
         return [
-            ProfileProposal(memory_id=m["id"], value=m["content"], quote=m["content"])
+            ProfileProposal(
+                property_key="communication", memory_id=m["id"],
+                value=m["content"], quote=m["content"],
+            )
             for m in memories
             if m["cognitive_type"] == "inference"
         ]
@@ -815,9 +818,12 @@ def test_future_fact_schedules_profile_when_it_becomes_eligible(context, monkeyp
             return future + timedelta(minutes=2)
 
     class Model:
-        def extract(self, memories):
+        def extract(self, memories, *, dimensions):
             return [
-                ProfileProposal(memory_id=m["id"], value=m["content"], quote=m["content"])
+                ProfileProposal(
+                    property_key="communication", memory_id=m["id"],
+                    value=m["content"], quote=m["content"],
+                )
                 for m in memories
             ]
 

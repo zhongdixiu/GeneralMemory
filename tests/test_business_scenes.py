@@ -299,7 +299,7 @@ def test_reviewed_migration_is_idempotent_and_audited(session):
     ).all()
 
 
-def test_profile_collision_and_changed_input_are_reported(session):
+def test_profile_dimension_allows_scope_merge_and_changed_input_is_reported(session):
     tenant = f"tenant_profile_scene_{uuid4().hex}"
     rows = [
         ProfileProperty(
@@ -320,12 +320,13 @@ def test_profile_collision_and_changed_input_are_reported(session):
     item = next(
         item for item in build_report(session, tenant_id=tenant) if item["id"] == rows[0].id
     )
-    assert apply_report(session, [item])[0]["status"] == "PROFILE_COLLISION"
+    assert apply_report(session, [item])[0]["status"] == "APPLIED"
+    rows[0].business_domains = ["邮件"]
     rows[0].version += 1
     assert apply_report(session, [item])[0]["status"] == "INPUT_CHANGED"
 
 
-def test_keyless_profile_scene_migration_allows_complementary_statements(session):
+def test_profile_scene_migration_allows_complementary_dimension_statements(session):
     tenant = f"tenant_profile_scene_{uuid4().hex}"
     rows = [
         ProfileProperty(
@@ -333,6 +334,7 @@ def test_keyless_profile_scene_migration_allows_complementary_statements(session
             tenant_id=tenant,
             user_id="u1",
             business_domains=scope,
+            property_key="communication",
             property_value=value,
             value_type="string",
             effective_at=datetime.now(UTC),
