@@ -1,0 +1,95 @@
+      table_name       |    column_name    |        data_type         | is_nullable |  column_default  
+-----------------------+-------------------+--------------------------+-------------+------------------
+ active_queue_sessions | last_updated      | timestamp with time zone | NO          | now()
+ active_queue_sessions | id                | text                     | NO          | 
+ active_queue_sessions | work_unit_key     | text                     | NO          | 
+ alembic_version       | version_num       | character varying        | NO          | 
+ collections           | id                | text                     | NO          | 
+ collections           | created_at        | timestamp with time zone | NO          | now()
+ collections           | metadata          | jsonb                    | NO          | '{}'::jsonb
+ collections           | workspace_name    | text                     | NO          | 
+ collections           | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+ collections           | observer          | text                     | NO          | 
+ collections           | observed          | text                     | NO          | 
+ documents             | id                | text                     | NO          | 
+ documents             | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+ documents             | content           | text                     | NO          | 
+ documents             | embedding         | USER-DEFINED             | YES         | 
+ documents             | created_at        | timestamp with time zone | NO          | now()
+ documents             | workspace_name    | text                     | NO          | 
+ documents             | session_name      | text                     | YES         | 
+ documents             | observer          | text                     | NO          | 
+ documents             | observed          | text                     | NO          | 
+ documents             | level             | text                     | NO          | 'explicit'::text
+ documents             | times_derived     | integer                  | NO          | 1
+ documents             | source_ids        | jsonb                    | YES         | 
+ documents             | deleted_at        | timestamp with time zone | YES         | 
+ documents             | sync_state        | text                     | NO          | 'pending'::text
+ documents             | last_sync_at      | timestamp with time zone | YES         | 
+ documents             | sync_attempts     | integer                  | NO          | 0
+ message_embeddings    | id                | bigint                   | NO          | 
+ message_embeddings    | content           | text                     | NO          | 
+ message_embeddings    | embedding         | USER-DEFINED             | YES         | 
+ message_embeddings    | message_id        | text                     | NO          | 
+ message_embeddings    | workspace_name    | text                     | NO          | 
+ message_embeddings    | session_name      | text                     | NO          | 
+ message_embeddings    | peer_name         | text                     | NO          | 
+ message_embeddings    | created_at        | timestamp with time zone | NO          | now()
+ message_embeddings    | sync_state        | text                     | NO          | 'pending'::text
+ message_embeddings    | last_sync_at      | timestamp with time zone | YES         | 
+ message_embeddings    | sync_attempts     | integer                  | NO          | 0
+ messages              | id                | bigint                   | NO          | 
+ messages              | public_id         | text                     | NO          | 
+ messages              | content           | text                     | NO          | 
+ messages              | metadata          | jsonb                    | NO          | '{}'::jsonb
+ messages              | created_at        | timestamp with time zone | NO          | now()
+ messages              | peer_name         | text                     | NO          | 
+ messages              | workspace_name    | text                     | NO          | 
+ messages              | session_name      | text                     | NO          | 
+ messages              | token_count       | integer                  | NO          | 0
+ messages              | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+ messages              | seq_in_session    | bigint                   | NO          | 
+ peers                 | id                | text                     | NO          | 
+ peers                 | name              | text                     | NO          | 
+ peers                 | metadata          | jsonb                    | NO          | '{}'::jsonb
+ peers                 | created_at        | timestamp with time zone | NO          | now()
+ peers                 | configuration     | jsonb                    | NO          | '{}'::jsonb
+ peers                 | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+ peers                 | workspace_name    | text                     | NO          | 
+ queue                 | id                | bigint                   | NO          | 
+ queue                 | session_id        | text                     | YES         | 
+ queue                 | payload           | jsonb                    | NO          | 
+ queue                 | processed         | boolean                  | NO          | false
+ queue                 | task_type         | text                     | NO          | 
+ queue                 | work_unit_key     | text                     | NO          | 
+ queue                 | error             | text                     | YES         | 
+ queue                 | created_at        | timestamp with time zone | NO          | now()
+ queue                 | workspace_name    | text                     | YES         | 
+ queue                 | message_id        | bigint                   | YES         | 
+ session_peers         | workspace_name    | text                     | NO          | 
+ session_peers         | session_name      | text                     | NO          | 
+ session_peers         | peer_name         | text                     | NO          | 
+ session_peers         | configuration     | jsonb                    | NO          | '{}'::jsonb
+ session_peers         | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+ session_peers         | joined_at         | timestamp with time zone | NO          | now()
+ session_peers         | left_at           | timestamp with time zone | YES         | 
+ sessions              | id                | text                     | NO          | 
+ sessions              | is_active         | boolean                  | NO          | true
+ sessions              | metadata          | jsonb                    | NO          | '{}'::jsonb
+ sessions              | created_at        | timestamp with time zone | NO          | now()
+ sessions              | configuration     | jsonb                    | NO          | '{}'::jsonb
+ sessions              | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+ sessions              | workspace_name    | text                     | NO          | 
+ sessions              | name              | text                     | NO          | 
+ webhook_endpoints     | id                | text                     | NO          | 
+ webhook_endpoints     | workspace_name    | text                     | NO          | 
+ webhook_endpoints     | url               | text                     | NO          | 
+ webhook_endpoints     | created_at        | timestamp with time zone | NO          | now()
+ workspaces            | id                | text                     | NO          | 
+ workspaces            | name              | text                     | NO          | 
+ workspaces            | created_at        | timestamp with time zone | NO          | now()
+ workspaces            | metadata          | jsonb                    | NO          | '{}'::jsonb
+ workspaces            | configuration     | jsonb                    | NO          | '{}'::jsonb
+ workspaces            | internal_metadata | jsonb                    | NO          | '{}'::jsonb
+(91 rows)
+

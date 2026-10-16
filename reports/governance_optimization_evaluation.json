@@ -1,0 +1,304 @@
+{
+  "evaluated_on": "2026-10-10",
+  "model": "qwen3.8-max",
+  "synthetic_only": true,
+  "passed": 12,
+  "cases": [
+    {
+      "case": "semantic_duplicate",
+      "passed": true,
+      "decision": {
+        "merge_ids": [
+          "m2"
+        ],
+        "merge_reason": "Both m1 and m2 express the identical durable requirement that weekly reports (周报) must present the conclusion first, with no difference in conditions or validity period.",
+        "inferences": [],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 55,
+        "prompt_tokens": 1101,
+        "total_tokens": 1156,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": 1101
+        }
+      }
+    },
+    {
+      "case": "complementary_requirements",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 21,
+        "prompt_tokens": 1108,
+        "total_tokens": 1129,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 1024,
+          "text_tokens": 1108
+        }
+      }
+    },
+    {
+      "case": "explicit_correction",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [],
+        "invalidations": [
+          {
+            "memory_id": "m1",
+            "source_id": "s2",
+            "quote": "以后周报改成先列风险",
+            "reason": "The later explicit user instruction in s2 uses '改成' (change to), directly replacing the earlier rule in m1 about putting conclusions first in weekly reports with a new rule to list risks first."
+          }
+        ],
+        "suspicions": [],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 85,
+        "prompt_tokens": 1100,
+        "total_tokens": 1185,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": 1100
+        }
+      }
+    },
+    {
+      "case": "scoped_work_habit",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [
+          {
+            "content": "用户在report场景下编写周报和项目复盘文档时先写结论再展开细节或依据。",
+            "source_ids": [
+              "m1",
+              "m2"
+            ],
+            "confidence": 0.9,
+            "reason": "m1和m2分别来自项目复盘和周报两个不同任务上下文的独立用户指令，均要求先写结论再展开后续内容，构成跨任务的重复倾向泛化。",
+            "business_domains": [
+              "report"
+            ]
+          }
+        ],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 104,
+        "prompt_tokens": 1125,
+        "total_tokens": 1229,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 1024,
+          "text_tokens": 1125
+        }
+      }
+    },
+    {
+      "case": "age_alone_is_not_invalidity",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [],
+        "invalidations": [],
+        "suspicions": [
+          {
+            "memory_id": "m1",
+            "reason": "m2 states the user has not submitted weekly reports for the past six months, which may render the formatting preference in m1 currently inactive or stale."
+          }
+        ],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 21,
+        "prompt_tokens": 1110,
+        "total_tokens": 1131,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 1024,
+          "text_tokens": 1110
+        }
+      }
+    },
+    {
+      "case": "general_decision_habit",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [
+          {
+            "content": "用户在做旅行计划和购买电脑等决策前，习惯先比较多个方案的优缺点再决定。",
+            "source_ids": [
+              "m1",
+              "m2"
+            ],
+            "confidence": 0.85,
+            "reason": "两条独立记忆分别来自旅行计划和购买电脑两个不同任务场景，均表明用户在决策前会对比多个选项的优缺点，构成跨场景的可操作决策习惯泛化。",
+            "business_domains": null
+          }
+        ],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 103,
+        "prompt_tokens": 1146,
+        "total_tokens": 1249,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 1024,
+          "text_tokens": 1146
+        }
+      }
+    },
+    {
+      "case": "single_incidental_action",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": null,
+        "inference_reviews": []
+      },
+      "usage": {
+        "completion_tokens": 21,
+        "prompt_tokens": 1113,
+        "total_tokens": 1134,
+        "completion_tokens_details": null,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cache_write_tokens": null,
+          "cached_tokens": 1024,
+          "text_tokens": 1113
+        }
+      }
+    },
+    {
+      "case": "unresolved_conflict",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": {
+          "outcome": "unresolved",
+          "reason": "m1 states the default email range is 7 days and m2 states it is 3 days. Both apply to the report domain with no expiration, but there is no explicit user correction or clarification proving one obsolete or distinguishing their conditions.",
+          "question": "邮件的默认范围是7天还是3天？或者这两个数值分别适用于不同的场景或时间段？",
+          "facts": [
+            {
+              "content": "邮件默认范围7天",
+              "basis_memory_id": "m1",
+              "source_id": "s1",
+              "quote": "邮件默认范围7天"
+            },
+            {
+              "content": "邮件默认范围3天",
+              "basis_memory_id": "m2",
+              "source_id": "s2",
+              "quote": "邮件默认范围3天"
+            }
+          ]
+        },
+        "inference_reviews": []
+      }
+    },
+    {
+      "case": "clarified_conflict",
+      "passed": true,
+      "decision": {
+        "merge_ids": [],
+        "merge_reason": "",
+        "inferences": [],
+        "invalidations": [],
+        "suspicions": [],
+        "conflict_review": {
+          "outcome": "resolved",
+          "reason": "Source s3 contains an explicit user clarification that the previous 7-day requirement is obsolete and all emails should be organized using a 3-day default going forward. This resolves the conflict between m1 (7 days) and m2 (3 days). A sourced replacement fact is created from s3 to supersede both disputed records.",
+          "question": null,
+          "facts": [
+            {
+              "content": "以后邮件统一按3天整理，之前7天的要求作废。",
+              "basis_memory_id": "m3",
+              "source_id": "s3",
+              "quote": "澄清：以后邮件统一按3天整理，之前7天的要求作废。"
+            }
+          ]
+        },
+        "inference_reviews": []
+      }
+    },
+    {
+      "case": "stable_inferred_profile",
+      "passed": true,
+      "properties": [
+        {
+          "memory_id": "i1",
+          "value": "用户倾向于先给结论再展开说明。",
+          "quote": "用户倾向于先给结论再展开说明。"
+        }
+      ]
+    },
+    {
+      "case": "temporary_request_not_profile",
+      "passed": true,
+      "properties": []
+    },
+    {
+      "case": "explicit_fact_overrides_inferred_pattern",
+      "passed": true,
+      "properties": [
+        {
+          "memory_id": "f1",
+          "value": "用户明确要求以后邮件都详细说明。",
+          "quote": "用户明确要求以后邮件都详细说明。"
+        }
+      ]
+    }
+  ]
+}

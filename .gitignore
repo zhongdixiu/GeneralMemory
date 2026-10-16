@@ -1,0 +1,108 @@
+# ===========================
+# Python 编译产物
+# ===========================
+.pytest_cache/
+.ruff_cache/
+*.pyc
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# ===========================
+# 环境变量 & 敏感配置
+# ===========================
+.env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+*secret*
+secrets.*
+credentials.*
+
+# ===========================
+# IDE / 编辑器
+# ===========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ===========================
+# 操作系统
+# ===========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ===========================
+# 虚拟环境
+# ===========================
+venv/
+.venv/
+env/
+.env/
+virtualenv/
+pythonenv/
+.venv/
+
+# ===========================
+# 测试 & 覆盖率
+# ===========================
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# ===========================
+# 日志 & 临时文件
+# ===========================
+*.log
+*.tmp
+*.temp
+*.cache
+*.bak
+results/
+
+# ===========================
+# Jupyter Notebook
+# ===========================
+.ipynb_checkpoints/
+
+# ===========================
+# 其他
+# ===========================
+# mypy 类型检查
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# pytype
+.pytype/
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt

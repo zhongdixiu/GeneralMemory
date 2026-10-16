@@ -1,0 +1,620 @@
+{
+  "timestamp": "2026-09-26T17:40:26.054337+00:00",
+  "prompt_version": "p02-v4",
+  "dataset_version": "P02-v2",
+  "model": "qwen3.8-max",
+  "embedding_model": "BAAI/bge-m3",
+  "data": "fictional",
+  "gate": {
+    "misattribution": 0,
+    "scope_errors": 0,
+    "incorrect_supersession": 0,
+    "other_check_pass_rate_min": 0.9
+  },
+  "quality_status": "codex_review_passed_pending_human_review",
+  "cases": [
+    {
+      "id": "no_durable_value",
+      "expected_checks": [
+        "不生成长期事实。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "未形成事实。"
+      }
+    },
+    {
+      "id": "user_confirmation",
+      "expected_checks": [
+        "可生成仅适用于 email 的表达偏好，证据必须含 m2；m1 可以辅助解释。"
+      ],
+      "facts": [
+        {
+          "memory": "以后邮件回复都简洁些",
+          "message_ids": [
+            "m1",
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "邮件偏好仅限 email，引用目标用户 m2 及辅助提问 m1。"
+      }
+    },
+    {
+      "id": "assistant_misattribution",
+      "expected_checks": [
+        "不得把 assistant 描述的居住地或邮件偏好保存为用户事实。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "未采纳 assistant 陈述的居住地或偏好。"
+      }
+    },
+    {
+      "id": "history_not_new_evidence",
+      "expected_checks": [
+        "不得只依据 history 中的 m1 在本批新增或补证据。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "历史用户偏好没有作为本批独立事实。"
+      }
+    },
+    {
+      "id": "split_business_preferences",
+      "expected_checks": [
+        "拆成两条偏好；邮件偏好仅限 email。",
+        "项目方案偏好不得因来源 email_agent 而限定 email，也不得与邮件偏好合并。",
+        "方案所属业务范围无法可靠判定时跳过该候选并记录原因，不写未知范围为 NULL。"
+      ],
+      "facts": [
+        {
+          "memory": "邮件回复简洁",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        },
+        {
+          "memory": "项目方案详细说明",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": false,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [
+        {
+          "memory": "项目方案详细说明",
+          "reason": "SCOPE_UNRESOLVED"
+        }
+      ],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "邮件偏好限定 email；通用项目方案偏好 scope_known=false、project_limited=false，记录 SCOPE_UNRESOLVED。"
+      }
+    },
+    {
+      "id": "global_fact_from_email",
+      "expected_checks": [
+        "称呼是通用事实，business_domains 和 project_domains 均为 NULL。",
+        "不得因来源 email_agent 把称呼限制到 email。"
+      ],
+      "facts": [
+        {
+          "memory": "我的称呼是林舟。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "称呼为通用事实，与来源 email_agent 无关联。"
+      }
+    },
+    {
+      "id": "same_scope_duplicate",
+      "expected_checks": [
+        "不新增事实；给 old1 增加新的独立充分证据组。"
+      ],
+      "facts": [
+        {
+          "memory": "以后邮件都简洁回复。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "以后邮件都简洁回复。",
+          "action": "DUPLICATE",
+          "memory_ids": [
+            "old1"
+          ],
+          "justification_message_id": null,
+          "justification_quote": null,
+          "historical_before_id": null
+        }
+      ],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "DUPLICATE 指向 old1；证据补充由工程回归另行验证。"
+      }
+    },
+    {
+      "id": "same_text_two_projects",
+      "expected_checks": [
+        "两个项目限定候选均跳过，内部记录 PROJECT_SCOPE_RESERVED。",
+        "不解析项目 ID，不写通用或仅 email 范围事实。"
+      ],
+      "facts": [
+        {
+          "memory": "星河项目邮件总结使用项目符号。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": true,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        },
+        {
+          "memory": "远山项目邮件总结使用项目符号。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": true,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [
+        {
+          "memory": "星河项目邮件总结使用项目符号。",
+          "reason": "PROJECT_SCOPE_RESERVED"
+        },
+        {
+          "memory": "远山项目邮件总结使用项目符号。",
+          "reason": "PROJECT_SCOPE_RESERVED"
+        }
+      ],
+      "embedding_shapes": [],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "两个具体项目候选均标为项目限定，服务端跳过。"
+      }
+    },
+    {
+      "id": "unknown_project",
+      "expected_checks": [
+        "项目字段预留，项目限定候选跳过并记录原因。",
+        "不得降级成通用事实或仅限 email 的事实。"
+      ],
+      "facts": [
+        {
+          "memory": "未知项目的邮件总结使用项目符号。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": false,
+          "project_limited": true,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [
+        {
+          "memory": "未知项目的邮件总结使用项目符号。",
+          "reason": "PROJECT_SCOPE_RESERVED"
+        }
+      ],
+      "embedding_shapes": [],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "未知项目限定候选跳过，未降级通用。"
+      }
+    },
+    {
+      "id": "ambiguous_project",
+      "expected_checks": [
+        "项目字段预留，项目限定候选跳过；不猜测项目 ID。"
+      ],
+      "facts": [
+        {
+          "memory": "重名项目的材料放在批准目录。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": false,
+          "project_limited": true,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [
+        {
+          "memory": "重名项目的材料放在批准目录。",
+          "reason": "PROJECT_SCOPE_RESERVED"
+        }
+      ],
+      "embedding_shapes": [],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "材料目录标为项目限定并跳过，没有误标为 disk。"
+      }
+    },
+    {
+      "id": "explicit_correction",
+      "expected_checks": [
+        "建立上海居住事实，supersedes_id 指向 old1；old1 失效，受影响派生停止使用。",
+        "公共回执保持已冻结的 ADD 事件，内部替代信息不扩展公共协议。"
+      ],
+      "facts": [
+        {
+          "memory": "我现在住上海。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "correction",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "我现在住上海。",
+          "action": "SUPERSEDE",
+          "memory_ids": [
+            "old1"
+          ],
+          "justification_message_id": "m2",
+          "justification_quote": "之前说错了，我现在住上海。",
+          "historical_before_id": null
+        }
+      ],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "SUPERSEDE 指向 old1，有目标用户逐字原文依据。"
+      }
+    },
+    {
+      "id": "different_historical_periods",
+      "expected_checks": [
+        "保留历史与当前的时间语义；2025年的北京居住与2026年的上海居住不能一律视为争议。",
+        "不得把历史居住地当当前状态使用。"
+      ],
+      "facts": [
+        {
+          "memory": "2025年我住北京",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "historical",
+          "change_kind": "none",
+          "effective_at": "2024-12-31T16:00:00Z",
+          "expired_at": "2025-12-31T16:00:00Z"
+        },
+        {
+          "memory": "2026年搬到了上海",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "update",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024,
+        1024
+      ],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "北京事实覆盖 2025 年区间；上海事实保留 2026 年语义，未虚构精确搬家日。"
+      }
+    },
+    {
+      "id": "unresolved_contradiction",
+      "expected_checks": [
+        "缺少明确纠正依据，同范围矛盾进入同一 conflict_group_id，双方 disputed。",
+        "相关派生停止使用，不能仅凭新消息的接收顺序选择一个生日。"
+      ],
+      "facts": [
+        {
+          "memory": "我的生日是5月2日。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "我的生日是5月2日。",
+          "action": "DISPUTE",
+          "memory_ids": [
+            "old1"
+          ],
+          "justification_message_id": null,
+          "justification_quote": null,
+          "historical_before_id": null
+        }
+      ],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "生日矛盾输出 DISPUTE；没有按新消息顺序选择生日。"
+      }
+    },
+    {
+      "id": "late_historical_input",
+      "expected_checks": [
+        "迟到的2025年来源不能替代2026年开始生效的当前事实。",
+        "必要时保留有明确历史时间的北京事实，不能把处理时间作为状态更新依据。"
+      ],
+      "facts": [
+        {
+          "memory": "我现在住北京。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "我现在住北京。",
+          "action": "ADD",
+          "memory_ids": [],
+          "justification_message_id": null,
+          "justification_quote": null,
+          "historical_before_id": "old1"
+        }
+      ],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "ADD 附 historical_before_id=old1；服务端历史边界转换由工程回归验证。"
+      }
+    },
+    {
+      "id": "communication_preference",
+      "expected_checks": [
+        "形成发短信的长期表达偏好，仅适用于 communication；不因来源 email_agent 标为 email。"
+      ],
+      "facts": [
+        {
+          "memory": "以后给我发短信都简短些。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "communication"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "短信表达偏好仅标为 communication。"
+      }
+    },
+    {
+      "id": "cloud_drive_policy",
+      "expected_checks": [
+        "形成云盘分享规则，仅适用于 disk；不扩成通用文件或所有通讯的规则。"
+      ],
+      "facts": [
+        {
+          "memory": "以后我的云盘文件对外分享只用批准的分享链接。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "disk"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "execution_status": "ok",
+      "semantic_review": {
+        "reviewer": "Codex",
+        "result": "pass",
+        "notes": "个人云盘分享规则仅标为 disk。"
+      }
+    }
+  ],
+  "review": {
+    "reviewer": "Codex",
+    "review_date": "2026-09-27",
+    "semantic_cases_passed": 16,
+    "semantic_cases_total": 16,
+    "semantic_case_pass_rate": 1.0,
+    "misattribution_errors": 0,
+    "scope_errors": 0,
+    "incorrect_supersession_errors": 0,
+    "required_human_review": "pending",
+    "scope": "Provider 真实调用和服务端证据/治理校验；不包含真实模型 Add/Worker 数据库端到端执行。数据库效果由 Fake provider 工程回归验证。",
+    "remaining_confirmation": "此前确认的逐项人工核验门槛，待用户核对报告确认。"
+  }
+}

@@ -1,0 +1,479 @@
+{
+  "version": "P02-v3",
+  "status": "适用场景标签可扩展；项目字段不赋值，保留项目正文和上下文；待修正后真实模型评估",
+  "data_policy": "所有人物、项目和陈述均为虚构，不含生产数据或凭证。",
+  "fixture_context": {
+    "tenant_id": "tenant_eval",
+    "user_id": "user_eval",
+    "source_system": "email_agent",
+    "note": "source_system 与 business_domains 无映射；仅根据命题适用范围判定业务标签。",
+    "project_policy": "preserve_context_without_id",
+    "initial_business_domains": [
+      "email",
+      "disk",
+      "communication"
+    ]
+  },
+  "cases": [
+    {
+      "id": "no_durable_value",
+      "dimensions": [
+        "事实准确率"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "你好，谢谢。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "不生成长期事实。"
+      ]
+    },
+    {
+      "id": "user_confirmation",
+      "dimensions": [
+        "证据归属",
+        "指代"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "assistant",
+          "content": "以后邮件回复都简洁些，对吗？",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        },
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "对，就按这个要求。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "可生成仅适用于 email 的表达偏好，证据必须含 m2；m1 可以辅助解释。"
+      ]
+    },
+    {
+      "id": "assistant_misattribution",
+      "dimensions": [
+        "证据归属"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "assistant",
+          "content": "你住在北京，喜欢简洁邮件。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        },
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "先帮我查一下天气。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "不得把 assistant 描述的居住地或邮件偏好保存为用户事实。"
+      ]
+    },
+    {
+      "id": "history_not_new_evidence",
+      "dimensions": [
+        "证据归属",
+        "历史边界"
+      ],
+      "targets": [
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "今天先聊到这里。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "以后邮件都简洁回复。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "existing_facts": [],
+      "expected_checks": [
+        "不得只依据 history 中的 m1 在本批新增或补证据。"
+      ]
+    },
+    {
+      "id": "split_business_preferences",
+      "dimensions": [
+        "业务范围"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "邮件回复简洁，项目方案详细说明。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "拆为邮件回复简洁与项目方案详细说明两条独立偏好。",
+        "邮件偏好限于 email；方案偏好抽取新的方案编写场景标签，不能丢弃或变成通用偏好。",
+        "没有限定具体项目，project_limited=false；不赋项目 ID。"
+      ]
+    },
+    {
+      "id": "global_fact_from_email",
+      "dimensions": [
+        "业务范围"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "我的称呼是林舟。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "称呼是通用事实，business_domains 和 project_domains 均为 NULL。",
+        "不得因来源 email_agent 把称呼限制到 email。"
+      ]
+    },
+    {
+      "id": "same_scope_duplicate",
+      "dimensions": [
+        "去重"
+      ],
+      "targets": [
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "以后邮件都简洁回复。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [
+        {
+          "id": "old1",
+          "content": "用户要求邮件回复简洁。",
+          "business_domains": [
+            "email"
+          ],
+          "project_domains": null,
+          "status": "active"
+        }
+      ],
+      "expected_checks": [
+        "不新增事实；给 old1 增加新的独立充分证据组。"
+      ]
+    },
+    {
+      "id": "same_text_two_projects",
+      "dimensions": [
+        "项目范围",
+        "去重"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "星河项目邮件总结使用项目符号。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        },
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "远山项目邮件总结也使用项目符号。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "保留两条项目记忆，正文及 project_context 分别保留星河、远山项目。",
+        "项目字段不赋值；不跳过，不合并，不推广成所有邮件偏好。"
+      ],
+      "applicability_checks": [
+        {
+          "query": "请总结星河项目邮件",
+          "business_domain": "email",
+          "expected_candidate_indexes": [
+            0
+          ]
+        },
+        {
+          "query": "请总结远山项目邮件",
+          "business_domain": "email",
+          "expected_candidate_indexes": [
+            1
+          ]
+        },
+        {
+          "query": "帮我回复日常邮件",
+          "business_domain": "email",
+          "expected_candidate_indexes": []
+        }
+      ]
+    },
+    {
+      "id": "unknown_project",
+      "dimensions": [
+        "项目范围"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "未知项目的邮件总结使用项目符号。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "保留原文未知项目的邮件总结要求及项目上下文，不猜测项目 ID，不降级为一般邮件偏好。"
+      ]
+    },
+    {
+      "id": "ambiguous_project",
+      "dimensions": [
+        "项目范围"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "重名项目的材料放在批准目录。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "保留重名项目的目录要求及项目上下文，不猜测项目 ID，不因含目录而标为云盘；没有业务限制可保留空业务标签，项目限定仍保留。"
+      ]
+    },
+    {
+      "id": "explicit_correction",
+      "dimensions": [
+        "纠正"
+      ],
+      "targets": [
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "之前说错了，我现在住上海。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [
+        {
+          "id": "old1",
+          "content": "用户现在住北京。",
+          "business_domains": null,
+          "project_domains": null,
+          "status": "active"
+        }
+      ],
+      "expected_checks": [
+        "建立上海居住事实，supersedes_id 指向 old1；old1 失效，受影响派生停止使用。",
+        "公共回执保持已冻结的 ADD 事件，内部替代信息不扩展公共协议。"
+      ]
+    },
+    {
+      "id": "different_historical_periods",
+      "dimensions": [
+        "时间"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "2025年我住北京，2026年搬到了上海。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [],
+      "expected_checks": [
+        "保留历史与当前的时间语义；2025年的北京居住与2026年的上海居住不能一律视为争议。",
+        "不得把历史居住地当当前状态使用。"
+      ]
+    },
+    {
+      "id": "unresolved_contradiction",
+      "dimensions": [
+        "争议"
+      ],
+      "targets": [
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "我的生日是5月2日。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [
+        {
+          "id": "old1",
+          "content": "用户的生日是5月1日。",
+          "business_domains": null,
+          "project_domains": null,
+          "status": "active"
+        }
+      ],
+      "expected_checks": [
+        "缺少明确纠正依据，同范围矛盾进入同一 conflict_group_id，双方 disputed。",
+        "相关派生停止使用，不能仅凭新消息的接收顺序选择一个生日。"
+      ]
+    },
+    {
+      "id": "late_historical_input",
+      "dimensions": [
+        "时间",
+        "纠正"
+      ],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "我现在住北京。",
+          "occurred_at": "2025-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [
+        {
+          "id": "old1",
+          "content": "用户从2026年1月起住上海。",
+          "business_domains": null,
+          "project_domains": null,
+          "status": "active",
+          "effective_at": "2026-01-01T00:00:00+08:00"
+        }
+      ],
+      "expected_checks": [
+        "迟到的2025年来源不能替代2026年开始生效的当前事实。",
+        "必要时保留有明确历史时间的北京事实，不能把处理时间作为状态更新依据。"
+      ]
+    },
+    {
+      "id": "communication_preference",
+      "dimensions": [
+        "业务范围"
+      ],
+      "history": [],
+      "existing_facts": [],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "以后给我发短信都简短些。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "expected_checks": [
+        "形成发短信的长期表达偏好，仅适用于 communication；不因来源 email_agent 标为 email。"
+      ]
+    },
+    {
+      "id": "cloud_drive_policy",
+      "dimensions": [
+        "业务范围"
+      ],
+      "history": [],
+      "existing_facts": [],
+      "targets": [
+        {
+          "message_id": "m1",
+          "role": "user",
+          "content": "以后我的云盘文件对外分享只用批准的分享链接。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "expected_checks": [
+        "形成云盘分享规则，仅适用于 disk；不扩成通用文件或所有通讯的规则。"
+      ]
+    },
+    {
+      "id": "new_scenario_synonym",
+      "dimensions": [
+        "开放场景",
+        "语义去重"
+      ],
+      "targets": [
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "项目方案详细说明。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [
+        {
+          "id": "old1",
+          "content": "项目方案需要详细说明。",
+          "business_domains": [
+            "项目方案写作"
+          ],
+          "project_domains": null,
+          "status": "active"
+        }
+      ],
+      "expected_checks": [
+        "保留方案写作偏好并抽取场景标签。",
+        "与已有同义场景偏好判为 DUPLICATE，不能只按标签字符串判新增。"
+      ]
+    },
+    {
+      "id": "different_project_not_conflict",
+      "dimensions": [
+        "项目上下文",
+        "误替代"
+      ],
+      "targets": [
+        {
+          "message_id": "m2",
+          "role": "user",
+          "content": "远山项目邮件总结写详细些。",
+          "occurred_at": "2026-09-27T09:00:00+08:00"
+        }
+      ],
+      "history": [],
+      "existing_facts": [
+        {
+          "id": "old1",
+          "content": "星河项目邮件总结简洁。",
+          "business_domains": [
+            "email"
+          ],
+          "project_domains": null,
+          "project_context": "星河项目",
+          "status": "active"
+        }
+      ],
+      "expected_checks": [
+        "保留远山项目的要求和项目上下文。",
+        "不能与星河项目判为重复、争议或替代。"
+      ]
+    }
+  ]
+}

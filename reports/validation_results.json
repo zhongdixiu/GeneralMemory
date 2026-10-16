@@ -1,0 +1,272 @@
+{
+  "model_version": "V1.0",
+  "batch": "final_acceptance_and_go_no_go",
+  "completed_batches": [
+    "engineering_and_database_baseline",
+    "sample_data_and_minimal_domain_functions",
+    "evidence_groups_and_lifecycle",
+    "postgresql_async_task_queue",
+    "scope_vector_retrieval_and_performance_smoke",
+    "honcho_profile_and_migration_validation",
+    "final_acceptance_and_go_no_go"
+  ],
+  "current_batch": null,
+  "current_batch_status": "completed",
+  "status": "passed",
+  "environment": {
+    "python": "3.12.10",
+    "poetry": "2.4.1",
+    "postgresql": "15.17",
+    "pgvector": "0.8.2",
+    "docker_compose": "2.32.4-desktop.1"
+  },
+  "database": {
+    "name": "memory_cmic",
+    "user": "memory_cmic",
+    "host_port": 5433,
+    "container_port": 5432,
+    "volume": "memory_cmic_pgdata",
+    "runtime_tables": 7,
+    "migration_tables": 1,
+    "non_primary_indexes": 27,
+    "constraints": 54
+  },
+  "checks": {
+    "upgrade": "passed",
+    "downgrade": "passed",
+    "second_upgrade": "passed",
+    "metadata_drift": "none",
+    "schema_and_domain_tests": {
+      "passed": 65,
+      "failed": 0
+    },
+    "lifecycle_cases": {
+      "passed": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T09",
+        "T15",
+        "T16"
+      ],
+      "failed": []
+    },
+    "task_queue": {
+      "targeted_tests_passed": 9,
+      "cases_passed": [
+        "T10",
+        "T12",
+        "T17",
+        "T18",
+        "T19"
+      ],
+      "skip_locked_two_connections": "passed",
+      "lease_ownership_and_takeover": "passed",
+      "retry_backoff": "passed",
+      "input_version_guard": "passed",
+      "correlation_propagation": "passed",
+      "postgresql_is_source_of_truth": true,
+      "mq_started": false
+    },
+    "smoke_data_preparation": {
+      "status": "passed",
+      "default_memory_count": 3000,
+      "ten_thousand_required": false,
+      "escalation_count": 10000,
+      "escalation_condition": "default scale cannot produce a stable, explainable index plan",
+      "tenant_id": "tenant_wp5_smoke",
+      "source_records": 3000,
+      "memory_items": 3000,
+      "evidence_edges": 3000,
+      "embeddings": 3030,
+      "load_seconds": 14.581,
+      "embedding_table_total_mib": 49,
+      "hnsw_index_mib": 24,
+      "hnsw_preflight_plan": "ix_memory_embedding_active_hnsw",
+      "targeted_tests_passed": 2,
+      "full_tests_passed": 59
+    },
+    "retrieval_and_performance_smoke": {
+      "status": "passed",
+      "case_passed": "T08",
+      "targeted_tests_passed": 22,
+      "full_tests_passed": 62,
+      "subject_routes": [
+        "user",
+        "agent",
+        "company"
+      ],
+      "explicit_model_id": true,
+      "cosine_ranking": "passed",
+      "stale_status_exclusion": "passed",
+      "stale_content_hash_exclusion": "passed",
+      "iterations_per_query": 30,
+      "timings_ms": {
+        "single_subject_vector": {
+          "p50": 12.521,
+          "p95": 18.093
+        },
+        "scoped_vector": {
+          "p50": 9.741,
+          "p95": 10.502
+        },
+        "multi_subject_vector": {
+          "p50": 23.987,
+          "p95": 30.199
+        },
+        "ttl_scan": {
+          "p50": 0.942,
+          "p95": 1.455
+        },
+        "source_reverse_dependency": {
+          "p50": 0.753,
+          "p95": 1.412
+        }
+      },
+      "plans": {
+        "hnsw_preflight": "ix_memory_embedding_active_hnsw",
+        "ttl_scan": "ix_memory_item_active_expired_at",
+        "source_reverse_dependency": "ix_evidence_upstream_source",
+        "filtered_vector": "sequential scan selected at 3030 rows; 9.102 ms total",
+        "raw_report": "reports/wp5_performance_smoke.json"
+      },
+      "ten_thousand_required": false
+    },
+    "honcho_profile_and_migration": {
+      "status": "passed",
+      "source_connection": {
+        "transaction_read_only": true,
+        "dedicated_read_only_role": false,
+        "source_fingerprint_unchanged": true
+      },
+      "source_counts": {
+        "workspaces": 1,
+        "peers": 4,
+        "sessions": 26,
+        "messages": 142,
+        "collections": 3,
+        "documents": 268,
+        "message_embeddings": 138,
+        "queue": 805
+      },
+      "source_relationships": {
+        "internal_message_id_references": 216,
+        "internal_message_id_matches": 216,
+        "document_source_id_references": 184,
+        "document_source_id_matches": 168,
+        "unmatched_occurrences": 16,
+        "distinct_unmatched_ids": 12,
+        "affected_documents": 12
+      },
+      "representative_batch": {
+        "tenant_id": "tenant_honcho_hermes",
+        "source_namespace": "workspace/hermes",
+        "sessions": 10,
+        "sessions_with_documents": 2,
+        "messages": 116,
+        "documents": 50,
+        "source_records": 134,
+        "memory_items": 50,
+        "evidence_edges": 84,
+        "external_mappings": 166,
+        "legacy_import_sources": 18,
+        "vector_tasks": 50,
+        "audit_logs": 268,
+        "orphan_evidence": 0
+      },
+      "second_run_inserted": {
+        "source_records": 0,
+        "memory_items": 0,
+        "evidence_edges": 0,
+        "tasks": 0
+      },
+      "targeted_tests_passed": 3,
+      "full_tests_passed": 65,
+      "cases_passed": [
+        "T13",
+        "T14"
+      ],
+      "reports": [
+        "reports/honcho_profile.json",
+        "reports/honcho_migration_dry_run.json",
+        "reports/honcho_migration_first.json",
+        "reports/honcho_migration_second.json",
+        "reports/honcho_migration_validation.json",
+        "reports/honcho_migration_report.md"
+      ]
+    },
+    "fixture": {
+      "path": "datas/lifecycle_cases.json",
+      "synthetic_data_only": true,
+      "source_records": 12,
+      "memory_items": 11,
+      "evidence_edges": 15,
+      "embeddings": 8,
+      "tasks": 3
+    },
+    "ruff": "passed",
+    "poetry": "passed",
+    "volume_restart_persistence": "passed",
+    "honcho_container_unchanged": true,
+    "final_acceptance": {
+      "status": "passed",
+      "executed_at": "2026-09-21T07:52:40.206284+00:00",
+      "full_test_suite": "passed",
+      "core_cases": [
+        "T01",
+        "T02",
+        "T03",
+        "T04",
+        "T05",
+        "T06",
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15",
+        "T16",
+        "T17",
+        "T18",
+        "T19"
+      ],
+      "database_constraint_tests": "passed",
+      "migration_upgrade": "passed",
+      "metadata_drift": "none",
+      "performance_report": "reports/wp5_performance_smoke.json",
+      "honcho_migration_report": "reports/honcho_migration_validation.json",
+      "honcho_migration_validation": "passed",
+      "ruff": "passed",
+      "poetry": "passed"
+    },
+    "database_constraints": {
+      "status": "passed",
+      "targeted_tests_passed": 17,
+      "case_passed": "T11"
+    }
+  },
+  "overall_model_go_no_go": "go",
+  "go_no_go_decision": {
+    "conclusion": "GO: data model V1.0 may enter core service development",
+    "scope": "data-model engineering baseline; not production launch approval",
+    "no_go_conditions_triggered": [],
+    "remaining_risks": [
+      "direct SQL can bypass application-level evidence-group ownership checks",
+      "direct SQL does not normalize scope array ordering or duplicates",
+      "production Honcho migration requires a dedicated read-only role",
+      "performance smoke at 3000 memories is not a production SLA",
+      "other Honcho versions and new sources require independent profiling"
+    ],
+    "deferred_validations": [
+      "profile_rebuild to profile_property/profile_basis end-to-end behavior",
+      "production-scale capacity and latency"
+    ]
+  }
+}

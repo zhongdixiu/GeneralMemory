@@ -1,0 +1,38 @@
+{
+  "executed_at": "2026-09-21T07:11:54.232068+00:00",
+  "migration_batch_id": "wp6_honcho_20260921_02",
+  "correlation_id": "hcorr_09c2fc89567cfd88b04e3beee68a236f58410d0723f27daf",
+  "plan": {
+    "workspace": "hermes",
+    "tenant_id": "tenant_honcho_hermes",
+    "source_namespace": "workspace/hermes",
+    "selected_sessions": 10,
+    "sessions_with_documents": 2,
+    "selected_messages": 116,
+    "selected_documents": 50,
+    "document_levels": {
+      "deductive": 10,
+      "explicit": 35,
+      "inductive": 5
+    },
+    "planned_supports_edges": 50,
+    "planned_derives_edges": 34,
+    "planned_evidence_edges": 84,
+    "legacy_import_sources": 18,
+    "unmatched_source_id_occurrences": 16,
+    "selection_note": "Only two source sessions contain documents; the selected message batch still spans 10 sessions."
+  },
+  "inserted": {
+    "source_records": 0,
+    "memory_items": 0,
+    "evidence_edges": 0,
+    "legacy_import_sources": 0,
+    "tasks": 0
+  },
+  "skipped": {
+    "messages": 116,
+    "documents": 50
+  },
+  "mode": "migrate",
+  "target_written": true
+}

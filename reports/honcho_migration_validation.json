@@ -1,0 +1,46 @@
+{
+  "migration_validation": {
+    "validated_at": "2026-09-21T07:17:57.530531+00:00",
+    "tenant_id": "tenant_honcho_hermes",
+    "source_namespace": "workspace/hermes",
+    "expected": {
+      "source_records": 134,
+      "memory_items": 50,
+      "evidence_edges": 84,
+      "external_mappings": 166,
+      "legacy_import_sources": 18,
+      "vector_tasks": 50,
+      "audit_logs": 268
+    },
+    "actual": {
+      "source_records": 134,
+      "memory_items": 50,
+      "evidence_edges": 84,
+      "external_mappings": 166,
+      "orphan_evidence": 0,
+      "vector_tasks": 50,
+      "audit_logs": 268
+    },
+    "checks": {
+      "source_records_complete": true,
+      "memory_items_complete": true,
+      "evidence_complete": true,
+      "mapping_count_matches": true,
+      "vector_tasks_complete": true,
+      "audit_logs_complete": true,
+      "correlation_id_consistent": true,
+      "orphan_evidence_zero": true
+    },
+    "passed": true
+  },
+  "second_run_inserted": {
+    "source_records": 0,
+    "memory_items": 0,
+    "evidence_edges": 0,
+    "legacy_import_sources": 0,
+    "tasks": 0
+  },
+  "idempotent": true,
+  "source_unchanged": true,
+  "passed": true
+}

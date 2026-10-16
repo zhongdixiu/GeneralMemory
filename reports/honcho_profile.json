@@ -1,0 +1,255 @@
+{
+  "generated_at": "2026-09-21T07:11:49.772508+00:00",
+  "source_read_only": true,
+  "schema": {
+    "expected_tables_present": true,
+    "public_tables": [
+      "active_queue_sessions",
+      "alembic_version",
+      "collections",
+      "documents",
+      "message_embeddings",
+      "messages",
+      "peers",
+      "queue",
+      "session_peers",
+      "sessions",
+      "webhook_endpoints",
+      "workspaces"
+    ],
+    "vector_columns": [
+      {
+        "table_name": "documents",
+        "column_name": "embedding",
+        "udt_name": "vector",
+        "formatted_type": "vector(1536)"
+      },
+      {
+        "table_name": "message_embeddings",
+        "column_name": "embedding",
+        "udt_name": "vector",
+        "formatted_type": "vector(1536)"
+      }
+    ]
+  },
+  "counts": {
+    "collections": 3,
+    "documents": 268,
+    "message_embeddings": 138,
+    "messages": 142,
+    "peers": 4,
+    "queue": 805,
+    "sessions": 26,
+    "workspaces": 1
+  },
+  "observer_observed": {
+    "collections": [
+      {
+        "observer": "email_agent",
+        "observed": "zhongdixiu",
+        "collection_count": 1
+      },
+      {
+        "observer": "hermes",
+        "observed": "zhongdixiu",
+        "collection_count": 1
+      },
+      {
+        "observer": "zhongdixiu",
+        "observed": "zhongdixiu",
+        "collection_count": 1
+      }
+    ],
+    "documents": [
+      {
+        "observer": "zhongdixiu",
+        "observed": "zhongdixiu",
+        "document_count": 124
+      },
+      {
+        "observer": "hermes",
+        "observed": "zhongdixiu",
+        "document_count": 81
+      },
+      {
+        "observer": "email_agent",
+        "observed": "zhongdixiu",
+        "document_count": 63
+      }
+    ]
+  },
+  "document_levels": [
+    {
+      "level": "deductive",
+      "count": 39
+    },
+    {
+      "level": "explicit",
+      "count": 205
+    },
+    {
+      "level": "inductive",
+      "count": 24
+    }
+  ],
+  "document_sources": {
+    "column_source_ids_semantics": "document references (derives)",
+    "column_source_ids": {
+      "reference_occurrences": 184,
+      "matching_documents": 168,
+      "matching_messages": 0,
+      "unmatched_occurrences": 16,
+      "distinct_unmatched_ids": 12,
+      "affected_documents": 12
+    },
+    "internal_message_ids_semantics": "numeric message references (supports)",
+    "internal_message_ids": {
+      "reference_occurrences": 216,
+      "matching_messages": 216,
+      "unmatched_occurrences": 0,
+      "affected_documents": 0
+    },
+    "source_count_distribution": [
+      {
+        "source_count": 0,
+        "document_count": 205
+      },
+      {
+        "source_count": 1,
+        "document_count": 5
+      },
+      {
+        "source_count": 2,
+        "document_count": 14
+      },
+      {
+        "source_count": 3,
+        "document_count": 31
+      },
+      {
+        "source_count": 4,
+        "document_count": 11
+      },
+      {
+        "source_count": 6,
+        "document_count": 1
+      },
+      {
+        "source_count": 8,
+        "document_count": 1
+      }
+    ],
+    "documents_without_message_or_document_sources": 6,
+    "unmatched_examples": [
+      {
+        "downstream_document_id": "_-EH_Xzuj0xJzoZOBRDOG",
+        "level": "deductive",
+        "source_id": "SfcPVDbstd8b-W8QutGlv"
+      },
+      {
+        "downstream_document_id": "EkEysA5DXaRLHVOXXei84",
+        "level": "inductive",
+        "source_id": "kDfyg7DuXjbcH_Zr9ECz"
+      },
+      {
+        "downstream_document_id": "f8y7Wph3ANxZDB4u4Ee0p",
+        "level": "deductive",
+        "source_id": "jG9TF295fFaojZjY98MpR"
+      },
+      {
+        "downstream_document_id": "f8y7Wph3ANxZDB4u4Ee0p",
+        "level": "deductive",
+        "source_id": "nxLk7KqwObvWTKUXM702V"
+      },
+      {
+        "downstream_document_id": "f8y7Wph3ANxZDB4u4Ee0p",
+        "level": "deductive",
+        "source_id": "wX2ZfzVuMu7Rv9iXWT09d"
+      },
+      {
+        "downstream_document_id": "HoSuJ-slE1_N7-Q3tVCrs",
+        "level": "deductive",
+        "source_id": "SfcPVDbstd8b-W8QutGlv"
+      },
+      {
+        "downstream_document_id": "-HqdmkBynJ1ROvw-FiKzJ",
+        "level": "deductive",
+        "source_id": "J7Ad0ZCdFqBgVZeldW74a"
+      },
+      {
+        "downstream_document_id": "jVx2ciAvkBhYtvGxpemaV",
+        "level": "inductive",
+        "source_id": "2tzDi-mLpAo_zrKBXRdCV"
+      },
+      {
+        "downstream_document_id": "oM1V9qj8vn9nnQ4NpqNea",
+        "level": "inductive",
+        "source_id": "SfcPVDbstd8b-W8QutGlv"
+      },
+      {
+        "downstream_document_id": "RgXE84j26y94I2hX8I96U",
+        "level": "deductive",
+        "source_id": "9Iu9TDnnFP32H1-XfHDQi"
+      }
+    ]
+  },
+  "soft_deleted_documents": 0,
+  "time_ranges": {
+    "messages": {
+      "first_at": "2026-05-14T08:59:26.920911+00:00",
+      "last_at": "2026-09-07T10:37:17.997536+00:00"
+    },
+    "documents": {
+      "first_at": "2026-05-15T01:35:11.980354+00:00",
+      "last_at": "2026-06-09T03:03:08.562907+00:00"
+    }
+  },
+  "sync_states": {
+    "documents": [
+      {
+        "sync_state": "synced",
+        "count": 268
+      }
+    ],
+    "message_embeddings": [
+      {
+        "sync_state": "synced",
+        "count": 138
+      }
+    ]
+  },
+  "source_fingerprint": {
+    "workspaces": {
+      "row_count": 1,
+      "digest": "2991750e54e17ad14397a4e3c674cae4"
+    },
+    "peers": {
+      "row_count": 4,
+      "digest": "3fe7bf3f8ff49aa8277741883c805c10"
+    },
+    "sessions": {
+      "row_count": 26,
+      "digest": "edeea18600892a6d588643a93eeacaba"
+    },
+    "messages": {
+      "row_count": 142,
+      "digest": "b6fa6b1f9c8498e247170284a4e1ef8d"
+    },
+    "collections": {
+      "row_count": 3,
+      "digest": "64a722074b2a38ae050f9cc2e7602520"
+    },
+    "documents": {
+      "row_count": 268,
+      "digest": "d106e8c63abc26ea0a95d434974da3fa"
+    },
+    "message_embeddings": {
+      "row_count": 138,
+      "digest": "10add780e07d57eefce0cc927c8db1d2"
+    },
+    "queue": {
+      "row_count": 805,
+      "digest": "6344094c8ed80406a1955aee670cfbc1"
+    }
+  }
+}

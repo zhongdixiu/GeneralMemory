@@ -1,0 +1,177 @@
+{
+  "timestamp": "2026-10-08T03:19:50.395031+00:00",
+  "prompt_version": "p02-v7-scenes",
+  "model": "qwen3.8-max",
+  "data": "fictional",
+  "quality_status": "pending_manual_review",
+  "cases": [
+    {
+      "id": "source_independent_assignment",
+      "source_system": "email_agent",
+      "facts": [
+        {
+          "memory": "我的称呼是林舟。",
+          "message_ids": [
+            "source_global"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        },
+        {
+          "memory": "写项目方案时，先列目标。",
+          "message_ids": [
+            "source_proposal"
+          ],
+          "business_domains": [
+            "方案编写"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "expected": "称呼业务范围为 null；项目方案偏好属于编写场景"
+    },
+    {
+      "id": "scene_reuse_and_distinction",
+      "decisions": [
+        {
+          "label": "项目方案写作",
+          "name": "方案编写",
+          "definition": null
+        },
+        {
+          "label": "方案评审",
+          "name": "方案评审",
+          "definition": "对项目方案进行审查、评估和讨论"
+        }
+      ],
+      "expected": "项目方案写作复用方案编写；方案评审另建场景"
+    },
+    {
+      "id": "overseas_email",
+      "query": "给海外客户写一封邮件，先列要点。",
+      "decisions": [
+        {
+          "id": "overseas",
+          "include": true,
+          "reason": "Directly matches the query condition of writing an email to overseas customers, specifying English as the language. More specific rule takes precedence over the general memory."
+        },
+        {
+          "id": "general",
+          "include": true,
+          "reason": "Matches the general task of writing an email and listing key points first. Its language condition (Chinese) conflicts with the more specific 'overseas' rule which takes precedence since the query explicitly satisfies the overseas condition, but the 'list key points first' requirement remains applicable."
+        },
+        {
+          "id": "disk",
+          "include": false,
+          "reason": "Irrelevant business domain (cloud disk file organization); does not match the email writing task."
+        }
+      ],
+      "expected_included": [
+        "general",
+        "overseas"
+      ]
+    },
+    {
+      "id": "unknown_recipient",
+      "query": "帮我写一封邮件，先列要点。",
+      "decisions": [
+        {
+          "id": "general",
+          "include": true,
+          "reason": "Directly matches the task of writing an email and listing key points first; highly relevant to the query."
+        },
+        {
+          "id": "overseas",
+          "include": true,
+          "reason": "Relevant to email writing. The condition (overseas customer) is unknown in the query, so it is included with its full conditional text preserved per instructions."
+        },
+        {
+          "id": "disk",
+          "include": false,
+          "reason": "Unrelated to email writing; pertains to cloud disk file organization, which is a clear mismatch for this query."
+        }
+      ],
+      "expected_included": [
+        "general",
+        "overseas"
+      ]
+    },
+    {
+      "id": "unrelated_disk",
+      "query": "整理云盘文件",
+      "decisions": [
+        {
+          "id": "disk",
+          "include": true,
+          "reason": "Directly matches the task query '整理云盘文件' and provides a specific rule (sort by date) for organizing cloud drive files."
+        },
+        {
+          "id": "general",
+          "include": false,
+          "reason": "Pertains to writing emails, which is unrelated to organizing cloud drive files."
+        },
+        {
+          "id": "overseas",
+          "include": false,
+          "reason": "Pertains to writing emails to overseas clients, which is unrelated to organizing cloud drive files."
+        }
+      ],
+      "expected_included": [
+        "disk"
+      ]
+    },
+    {
+      "id": "multiple_scenes",
+      "query": "帮我写一封邮件并整理云盘文件，邮件先列要点。",
+      "decisions": [
+        {
+          "id": "general",
+          "include": true,
+          "reason": "Directly matches the query's instruction to list key points first when writing an email, and specifies Chinese which aligns with the query language."
+        },
+        {
+          "id": "disk",
+          "include": true,
+          "reason": "Directly relevant to the second part of the query about organizing cloud drive files, providing a specific sorting rule."
+        },
+        {
+          "id": "overseas",
+          "include": true,
+          "reason": "Relevant to email writing; recipient condition (overseas customer) is unknown in the query, so it is preserved with its full conditional text per instructions."
+        }
+      ],
+      "expected_included": [
+        "general",
+        "overseas",
+        "disk"
+      ]
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 2022,
+    "completion_tokens": 647
+  },
+  "embedding_scene_ranking": [
+    {
+      "name": "email",
+      "similarity": 0.7132184410502685
+    },
+    {
+      "name": "方案编写",
+      "similarity": 0.5565698183007197
+    }
+  ],
+  "embedding_calls": 1
+}

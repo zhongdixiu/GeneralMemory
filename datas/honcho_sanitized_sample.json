@@ -1,0 +1,69 @@
+{
+  "workspace": "sample_workspace",
+  "tenant_id": "tenant_honcho_fixture",
+  "peer_types": {
+    "sample_user": "user",
+    "sample_agent": "agent"
+  },
+  "sessions": [
+    {"name": "sample_session", "message_count": 2}
+  ],
+  "messages": [
+    {
+      "id": 1,
+      "public_id": "sample_message_001",
+      "content": "用户要求安装工具前先完成安全检查。",
+      "metadata": {},
+      "internal_metadata": {},
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "peer_name": "sample_user",
+      "workspace_name": "sample_workspace",
+      "session_name": "sample_session",
+      "seq_in_session": 1
+    },
+    {
+      "id": 2,
+      "public_id": "sample_message_002",
+      "content": "助手确认安全检查是安装前置条件。",
+      "metadata": {},
+      "internal_metadata": {},
+      "created_at": "2026-01-01T00:01:00+00:00",
+      "peer_name": "sample_agent",
+      "workspace_name": "sample_workspace",
+      "session_name": "sample_session",
+      "seq_in_session": 2
+    }
+  ],
+  "documents": [
+    {
+      "id": "sample_document_001",
+      "content": "安装任何工具前必须完成安全检查。",
+      "internal_metadata": {"message_ids": [1]},
+      "created_at": "2026-01-01T00:02:00+00:00",
+      "workspace_name": "sample_workspace",
+      "session_name": "sample_session",
+      "observer": "sample_agent",
+      "observed": "sample_user",
+      "level": "explicit",
+      "source_ids": null,
+      "deleted_at": null
+    },
+    {
+      "id": "sample_document_002",
+      "content": "用户具有安全优先的软件使用偏好。",
+      "internal_metadata": {
+        "message_ids": [],
+        "source_ids": ["sample_document_001", "missing_document_001"],
+        "premises": ["安装前需要安全检查", "缺失的历史依据"]
+      },
+      "created_at": "2026-01-01T00:03:00+00:00",
+      "workspace_name": "sample_workspace",
+      "session_name": "sample_session",
+      "observer": "sample_agent",
+      "observed": "sample_user",
+      "level": "deductive",
+      "source_ids": ["sample_document_001", "missing_document_001"],
+      "deleted_at": null
+    }
+  ]
+}

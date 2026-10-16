@@ -1,0 +1,632 @@
+{
+  "timestamp": "2026-09-26T18:10:06.014424+00:00",
+  "prompt_version": "p02-v5",
+  "dataset_version": "P02-v3",
+  "model": "qwen3.8-max",
+  "embedding_model": "BAAI/bge-m3",
+  "data": "fictional",
+  "gate": {
+    "misattribution": 0,
+    "scope_errors": 0,
+    "incorrect_supersession": 0,
+    "other_check_pass_rate_min": 0.9
+  },
+  "quality_status": "pending_manual_review",
+  "cases": [
+    {
+      "id": "no_durable_value",
+      "expected_checks": [
+        "不生成长期事实。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "user_confirmation",
+      "expected_checks": [
+        "可生成仅适用于 email 的表达偏好，证据必须含 m2；m1 可以辅助解释。"
+      ],
+      "facts": [
+        {
+          "memory": "以后邮件回复都简洁些",
+          "message_ids": [
+            "m1",
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": "2026-09-27T01:00:00Z",
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "assistant_misattribution",
+      "expected_checks": [
+        "不得把 assistant 描述的居住地或邮件偏好保存为用户事实。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "history_not_new_evidence",
+      "expected_checks": [
+        "不得只依据 history 中的 m1 在本批新增或补证据。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "split_business_preferences",
+      "expected_checks": [
+        "拆为邮件回复简洁与项目方案详细说明两条独立偏好。",
+        "邮件偏好限于 email；方案偏好抽取新的方案编写场景标签，不能丢弃或变成通用偏好。",
+        "没有限定具体项目，project_limited=false；不赋项目 ID。"
+      ],
+      "facts": [
+        {
+          "memory": "邮件回复简洁",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        },
+        {
+          "memory": "项目方案详细说明",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "方案编写"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024,
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "global_fact_from_email",
+      "expected_checks": [
+        "称呼是通用事实，business_domains 和 project_domains 均为 NULL。",
+        "不得因来源 email_agent 把称呼限制到 email。"
+      ],
+      "facts": [
+        {
+          "memory": "我的称呼是林舟。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "same_scope_duplicate",
+      "expected_checks": [
+        "不新增事实；给 old1 增加新的独立充分证据组。"
+      ],
+      "facts": [
+        {
+          "memory": "以后邮件都简洁回复。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": "2026-09-27T01:00:00Z",
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "以后邮件都简洁回复。",
+          "action": "DUPLICATE",
+          "memory_ids": [
+            "old1"
+          ],
+          "justification_message_id": null,
+          "justification_quote": null,
+          "historical_before_id": null
+        }
+      ],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "same_text_two_projects",
+      "expected_checks": [
+        "保留两条项目记忆，正文及 project_context 分别保留星河、远山项目。",
+        "项目字段不赋值；不跳过，不合并，不推广成所有邮件偏好。"
+      ],
+      "facts": [
+        {
+          "memory": "星河项目邮件总结使用项目符号。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": true,
+          "project_context": "星河项目",
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        },
+        {
+          "memory": "远山项目邮件总结使用项目符号。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": true,
+          "project_context": "远山项目",
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024,
+        1024
+      ],
+      "governance": [],
+      "applicability": [
+        {
+          "query": "请总结星河项目邮件",
+          "business_domain": "email",
+          "expected_candidate_indexes": [
+            0
+          ],
+          "selected_ids": [
+            "candidate_0"
+          ],
+          "expected_ids": [
+            "candidate_0"
+          ],
+          "passed": true
+        },
+        {
+          "query": "请总结远山项目邮件",
+          "business_domain": "email",
+          "expected_candidate_indexes": [
+            1
+          ],
+          "selected_ids": [
+            "candidate_1"
+          ],
+          "expected_ids": [
+            "candidate_1"
+          ],
+          "passed": true
+        },
+        {
+          "query": "帮我回复日常邮件",
+          "business_domain": "email",
+          "expected_candidate_indexes": [],
+          "selected_ids": [],
+          "expected_ids": [],
+          "passed": true
+        }
+      ],
+      "execution_status": "ok"
+    },
+    {
+      "id": "unknown_project",
+      "expected_checks": [
+        "保留原文未知项目的邮件总结要求及项目上下文，不猜测项目 ID，不降级为一般邮件偏好。"
+      ],
+      "facts": [
+        {
+          "memory": "未知项目的邮件总结使用项目符号。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": false,
+          "project_limited": true,
+          "project_context": "未知项目",
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [
+        {
+          "memory": "未知项目的邮件总结使用项目符号。",
+          "reason": "SCOPE_UNRESOLVED"
+        }
+      ],
+      "embedding_shapes": [],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "ambiguous_project",
+      "expected_checks": [
+        "保留重名项目的目录要求及项目上下文，不猜测项目 ID，不因含目录而标为云盘；没有业务限制可保留空业务标签，项目限定仍保留。"
+      ],
+      "facts": [
+        {
+          "memory": "重名项目的材料放在批准目录。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": false,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [
+        {
+          "memory": "重名项目的材料放在批准目录。",
+          "reason": "SCOPE_UNRESOLVED"
+        }
+      ],
+      "embedding_shapes": [],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "explicit_correction",
+      "expected_checks": [
+        "建立上海居住事实，supersedes_id 指向 old1；old1 失效，受影响派生停止使用。",
+        "公共回执保持已冻结的 ADD 事件，内部替代信息不扩展公共协议。"
+      ],
+      "facts": [
+        {
+          "memory": "我现在住上海。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "correction",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "我现在住上海。",
+          "action": "SUPERSEDE",
+          "memory_ids": [
+            "old1"
+          ],
+          "justification_message_id": "m2",
+          "justification_quote": "之前说错了，我现在住上海。",
+          "historical_before_id": null
+        }
+      ],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "different_historical_periods",
+      "expected_checks": [
+        "保留历史与当前的时间语义；2025年的北京居住与2026年的上海居住不能一律视为争议。",
+        "不得把历史居住地当当前状态使用。"
+      ],
+      "facts": [
+        {
+          "memory": "2025年住北京",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "historical",
+          "change_kind": "none",
+          "effective_at": "2024-12-31T16:00:00Z",
+          "expired_at": "2025-12-31T16:00:00Z"
+        },
+        {
+          "memory": "2026年搬到了上海，现居上海",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "update",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024,
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "unresolved_contradiction",
+      "expected_checks": [
+        "缺少明确纠正依据，同范围矛盾进入同一 conflict_group_id，双方 disputed。",
+        "相关派生停止使用，不能仅凭新消息的接收顺序选择一个生日。"
+      ],
+      "facts": [
+        {
+          "memory": "我的生日是5月2日。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "我的生日是5月2日。",
+          "action": "DISPUTE",
+          "memory_ids": [
+            "old1"
+          ],
+          "justification_message_id": null,
+          "justification_quote": null,
+          "historical_before_id": null
+        }
+      ],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "late_historical_input",
+      "expected_checks": [
+        "迟到的2025年来源不能替代2026年开始生效的当前事实。",
+        "必要时保留有明确历史时间的北京事实，不能把处理时间作为状态更新依据。"
+      ],
+      "facts": [
+        {
+          "memory": "我现在住北京。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": null,
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [
+        {
+          "memory": "我现在住北京。",
+          "action": "ADD",
+          "memory_ids": [],
+          "justification_message_id": null,
+          "justification_quote": null,
+          "historical_before_id": "old1"
+        }
+      ],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "communication_preference",
+      "expected_checks": [
+        "形成发短信的长期表达偏好，仅适用于 communication；不因来源 email_agent 标为 email。"
+      ],
+      "facts": [
+        {
+          "memory": "以后给我发短信都简短些。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "communication"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": "2026-09-27T01:00:00Z",
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "cloud_drive_policy",
+      "expected_checks": [
+        "形成云盘分享规则，仅适用于 disk；不扩成通用文件或所有通讯的规则。"
+      ],
+      "facts": [
+        {
+          "memory": "以后云盘文件对外分享只用批准的分享链接。",
+          "message_ids": [
+            "m1"
+          ],
+          "business_domains": [
+            "disk"
+          ],
+          "scope_known": true,
+          "project_limited": false,
+          "project_context": null,
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": "2026-09-27T01:00:00Z",
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "new_scenario_synonym",
+      "expected_checks": [
+        "保留方案写作偏好并抽取场景标签。",
+        "与已有同义场景偏好判为 DUPLICATE，不能只按标签字符串判新增。"
+      ],
+      "facts": [],
+      "skipped": [],
+      "embedding_shapes": [],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    },
+    {
+      "id": "different_project_not_conflict",
+      "expected_checks": [
+        "保留远山项目的要求和项目上下文。",
+        "不能与星河项目判为重复、争议或替代。"
+      ],
+      "facts": [
+        {
+          "memory": "远山项目的邮件总结需要写得详细些。",
+          "message_ids": [
+            "m2"
+          ],
+          "business_domains": [
+            "email"
+          ],
+          "scope_known": true,
+          "project_limited": true,
+          "project_context": "远山项目",
+          "temporal_kind": "current",
+          "change_kind": "none",
+          "effective_at": null,
+          "expired_at": null
+        }
+      ],
+      "skipped": [],
+      "embedding_shapes": [
+        1024
+      ],
+      "governance": [],
+      "applicability": [],
+      "execution_status": "ok"
+    }
+  ]
+}

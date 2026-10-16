@@ -1,0 +1,25 @@
+{
+  "mode": "dry-run",
+  "generated_at": "2026-09-21T07:10:59.979122+00:00",
+  "target_written": false,
+  "plan": {
+    "workspace": "hermes",
+    "tenant_id": "tenant_honcho_hermes",
+    "source_namespace": "workspace/hermes",
+    "selected_sessions": 10,
+    "sessions_with_documents": 2,
+    "selected_messages": 116,
+    "selected_documents": 50,
+    "document_levels": {
+      "deductive": 10,
+      "explicit": 35,
+      "inductive": 5
+    },
+    "planned_supports_edges": 50,
+    "planned_derives_edges": 34,
+    "planned_evidence_edges": 84,
+    "legacy_import_sources": 18,
+    "unmatched_source_id_occurrences": 16,
+    "selection_note": "Only two source sessions contain documents; the selected message batch still spans 10 sessions."
+  }
+}

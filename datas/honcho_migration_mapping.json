@@ -1,0 +1,11 @@
+{
+  "workspace_tenants": {
+    "hermes": "tenant_honcho_hermes"
+  },
+  "peer_types": {
+    "zhongdixiu": "user",
+    "hermes": "agent",
+    "email_agent": "agent",
+    "email-agent": "agent"
+  }
+}
