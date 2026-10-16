@@ -79,6 +79,8 @@ agent_id 沿事实的 supports 证据追溯到 source_record，再检查同租�
 
 迁移前未绑定 Agent 的旧来源继续要求 kind=target 的可追溯提交关系，不使用 created_by、消息 author_id 或 source_system 猜测来源 Agent。升级后不同 Agent 使用相同外部消息 ID 会形成各自的来源，不能通过重复提交另一会话的 ID 为原事实授予新的来源标记；同用户未过滤的长期记忆仍共享。
 
+统一更新接口创建的手工来源例外：source_type=manual、source_system=memory_management，按服务端记录的 caller_agent_id/agent_id 匹配编辑 Agent，无需伪造 fact_extract 提交。替代后的事实不沿用旧来源 Agent 或来源系统，具体契约见[记忆修改与删除接口运行说明](./记忆修改与删除接口运行说明.md)。
+
 事实至少需要一组完整有效 supports 依据，其全部来源满足过滤条件。推断至少需要一组完整有效 derives 依据，其中每条事实都在筛选范围内得到完整来源支持。例如推断必须同时依赖 A、B 的事实时，只筛选 A 不返回它；如果推断另有一组完全来自 A 的独立有效依据，则可以返回。两个过滤条件必须由同一组依据中的来源同时满足，不能由不同来源分别凑齐。
 
 来源过滤在向量候选截断之前执行，并在返回前重新核验。历史导入来源没有可追溯的目标提交关系时，不猜测 Agent：仍可参与未过滤或仅 source_system 过滤的查询，但不进入 agent_id 过滤结果。

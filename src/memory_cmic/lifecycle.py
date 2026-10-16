@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -17,7 +19,168 @@ from memory_cmic.models import (
     ProfileProperty,
     SourceRecord,
 )
+from memory_cmic.repositories import add_evidence_group
 from memory_cmic.task_queue import enqueue_task
+
+
+class MemoryVersionConflict(ValueError):
+    pass
+
+
+class MemoryUpdateConflict(ValueError):
+    pass
+
+
+def _lock_user_memory(
+    session: Session, *, tenant_id: str, user_id: str, memory_id: str,
+) -> MemoryItem:
+    lock_user(session, tenant_id, user_id)
+    memory = session.scalars(
+        select(MemoryItem).where(
+            MemoryItem.tenant_id == tenant_id,
+            MemoryItem.subject_type == "user",
+            MemoryItem.subject_id == user_id,
+            MemoryItem.cognitive_type.in_(["fact", "inference"]),
+            MemoryItem.id == memory_id,
+        ).with_for_update().execution_options(populate_existing=True)
+    ).one_or_none()
+    if memory is None:
+        raise LookupError("memory does not exist for this user in tenant")
+    return memory
+
+
+def delete_memory(
+    session: Session, *, tenant_id: str, user_id: str, memory_id: str,
+    operator_id: str, operator_type: str = "agent", reason: str | None = None,
+    expected_version: int | None = None, correlation_id: str | None = None,
+    now: datetime | None = None,
+) -> MemoryItem:
+    memory = _lock_user_memory(
+        session, tenant_id=tenant_id, user_id=user_id, memory_id=memory_id,
+    )
+    if memory.status == "deleted":
+        return memory
+    if expected_version is not None and memory.version != expected_version:
+        raise MemoryVersionConflict("memory changed since it was read")
+    check_time = now or datetime.now(UTC)
+    correlation_id = correlation_id or uuid4().hex
+    before = {"status": memory.status, "version": memory.version}
+    memory.status = "deleted"
+    memory.version += 1
+    memory.invalidated_at = check_time
+    memory.updated_at = check_time
+    record_audit(
+        session, tenant_id=tenant_id, action="DELETE", target_type="memory",
+        target_id=memory.id, operator_type=operator_type, operator_id=operator_id,
+        reason_code="MEMORY_DELETED", reason=reason, correlation_id=correlation_id,
+        context={"user_id": user_id}, state_before=before,
+        state_after={"status": "deleted", "version": memory.version}, created_at=check_time,
+    )
+    _propagate_memory_change(
+        session, memory=memory, correlation_id=correlation_id, now=check_time,
+    )
+    session.flush()
+    return memory
+
+
+def update_memory(
+    session: Session, *, tenant_id: str, user_id: str, memory_id: str, content: str,
+    operator_id: str, model_id: str, expected_version: int | None = None,
+    operator_type: str = "agent", reason: str | None = None,
+    correlation_id: str | None = None, now: datetime | None = None,
+) -> MemoryItem:
+    old = _lock_user_memory(
+        session, tenant_id=tenant_id, user_id=user_id, memory_id=memory_id,
+    )
+    check_time = now or datetime.now(UTC)
+    if expected_version is not None and old.version != expected_version:
+        raise MemoryVersionConflict("memory changed since it was read")
+    if (old.cognitive_type != "fact" or old.status != "active"
+            or old.effective_at > check_time
+            or old.expired_at is not None and old.expired_at <= check_time):
+        raise MemoryUpdateConflict("only a currently active user fact can be updated")
+    if not content.strip() or len(content) > 8000:
+        raise ValueError("memory content must contain 1-8000 nonblank characters")
+    if content == old.content:
+        return old
+    correlation_id = correlation_id or uuid4().hex
+    source = SourceRecord(
+        id=f"src_{uuid4().hex}", tenant_id=tenant_id, user_id=user_id,
+        source_system="memory_management", source_type="manual",
+        caller_agent_id=operator_id, agent_id=operator_id,
+        external_ref_id=correlation_id, author_type=operator_type, author_id=operator_id,
+        raw_content=content, content_hash=hashlib.sha256(content.encode()).hexdigest(),
+        occurred_at=check_time, received_at=check_time,
+    )
+    session.add(source)
+    metadata = deepcopy(old.metadata_json or {})
+    for key in ("source_message_ids", "statement_order", "governance_action",
+                "previous_memory_ids", "profile_admission"):
+        metadata.pop(key, None)
+    metadata.update({"source_occurred_at": check_time.isoformat(), "timestamp_origin": "source"})
+    replacement = MemoryItem(
+        id=f"mem_{uuid4().hex}", tenant_id=tenant_id,
+        subject_type="user", subject_id=user_id, cognitive_type="fact",
+        business_domains=deepcopy(old.business_domains),
+        project_domains=deepcopy(old.project_domains),
+        summary=content[:512], content=content,
+        semantic_hash=hashlib.sha256(" ".join(content.casefold().split()).encode()).hexdigest(),
+        metadata_json=metadata, confidence=1,
+        effective_at=old.effective_at, expired_at=old.expired_at,
+        supersedes_id=old.id, created_by=operator_id,
+    )
+    session.add(replacement)
+    session.flush()
+    add_evidence_group(session, [{
+        "id": f"evi_{uuid4().hex}", "tenant_id": tenant_id,
+        "relationship_type": "supports", "evidence_group_id": f"evg_{uuid4().hex}",
+        "upstream_source_id": source.id, "upstream_version": source.version,
+        "downstream_memory_id": replacement.id, "evidence_snippet": content,
+    }])
+    record_audit(
+        session, tenant_id=tenant_id, action="INSERT", target_type="source",
+        target_id=source.id, operator_type=operator_type, operator_id=operator_id,
+        reason_code="MANUAL_MEMORY_SOURCE", reason=reason, correlation_id=correlation_id,
+        context={"user_id": user_id, "memory_id": replacement.id},
+        state_after={"status": source.status, "version": source.version}, created_at=check_time,
+    )
+    before = {"status": old.status, "version": old.version, "content": old.content}
+    invalidate_memory(
+        session, tenant_id=tenant_id, memory_id=old.id, correlation_id=correlation_id,
+        now=check_time, operator_type=operator_type, operator_id=operator_id,
+        reason_code="MEMORY_UPDATED", reason=reason,
+        context={"replacement_id": replacement.id},
+    )
+    record_audit(
+        session, tenant_id=tenant_id, action="UPDATE", target_type="memory",
+        target_id=old.id, operator_type=operator_type, operator_id=operator_id,
+        reason_code="MEMORY_UPDATED", reason=reason, correlation_id=correlation_id,
+        context={"user_id": user_id, "replacement_id": replacement.id, "source_id": source.id},
+        state_before=before,
+        state_after={"id": replacement.id, "status": replacement.status,
+                     "version": replacement.version, "content": content},
+        created_at=check_time,
+    )
+    record_audit(
+        session, tenant_id=tenant_id, action="INSERT", target_type="memory",
+        target_id=replacement.id, operator_type=operator_type, operator_id=operator_id,
+        reason_code="MEMORY_CREATED", correlation_id=correlation_id,
+        context={"supersedes_id": old.id, "source_id": source.id},
+        state_after={"status": replacement.status, "version": replacement.version,
+                     "content": content}, created_at=check_time,
+    )
+    enqueue_task(session, {
+        "id": uuid4().hex, "tenant_id": tenant_id, "task_type": "vector_upsert",
+        "target_type": "memory", "target_id": replacement.id,
+        "input_version": replacement.version,
+        "idempotency_key": (
+            f"vector_upsert:memory:{replacement.id}:v{replacement.version}:{model_id}"
+        ),
+        "correlation_id": correlation_id, "payload": {"model_id": model_id}, "priority": 50,
+    })
+    mark_dirty(session, replacement)
+    session.flush()
+    return replacement
 
 
 def _audit_invalidation(
@@ -416,6 +579,8 @@ def govern_memory(
 ) -> None:
     if status not in {"invalidated", "disputed"}:
         raise ValueError("invalid governance status")
+    if memory.status == "deleted":
+        raise ValueError("deleted memory cannot be changed by governance")
     if memory.status == status and memory.conflict_group_id == conflict_group_id:
         return
     now = datetime.now(UTC)

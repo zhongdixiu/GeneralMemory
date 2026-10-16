@@ -56,6 +56,20 @@ def audit_client(connection):
                 "caller_agent_id": "agent",
                 "allowed_source_systems": ["test"],
             },
+            {
+                "token": "business-auditor",
+                "tenant_id": "tenant_audit",
+                "caller_agent_id": "agent_auditor",
+                "allowed_source_systems": ["test"],
+                "can_read_audit_content": True,
+            },
+            {
+                "token": "foreign-business-auditor",
+                "tenant_id": "tenant_other_audit",
+                "caller_agent_id": "agent_auditor",
+                "allowed_source_systems": ["test"],
+                "can_read_audit_content": True,
+            },
         ]
     )
     settings = replace(_settings("tenant_audit"), credentials=credentials)
@@ -88,6 +102,26 @@ def test_writer_uses_sql_null_and_explicit_task_link(session):
     ).one() == (True, True)
     with pytest.raises(ValueError, match="same tenant"):
         _event(session, task=task, tenant_id="tenant_other_audit")
+
+
+def test_business_audit_switch_is_independent_of_management(session, audit_client):
+    _event(session, state_after={"content": "用户要求周报先列结论"})
+    headers = {"Authorization": "Bearer business-auditor"}
+    response = audit_client.get("/api/v1/audit-logs?include_details=true", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["events"][0]["state_after"]["content"] == "用户要求周报先列结论"
+    assert audit_client.get("/api/v1/governance/policy", headers=headers).status_code == 403
+    assert audit_client.post("/api/v1/governance/runs", headers=headers,
+                             json={"user_id": "user_1"}).status_code == 403
+    path = "/api/v1/memories/memory_audit"
+    assert audit_client.delete(path, headers=headers,
+                               params={"user_id": "user_1"}).status_code == 403
+    assert audit_client.put(path, headers=headers,
+                            json={"user_id": "user_1", "content": "修改"}).status_code == 403
+    foreign = audit_client.get("/api/v1/audit-logs?include_details=true", headers={
+        "Authorization": "Bearer foreign-business-auditor",
+    })
+    assert foreign.status_code == 200 and foreign.json()["events"] == []
 
 
 def test_legacy_inference_is_in_object_history_without_rewriting(session):

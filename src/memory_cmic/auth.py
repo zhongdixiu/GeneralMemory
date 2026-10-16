@@ -22,6 +22,7 @@ class AuthContext:
     allowed_source_systems: frozenset[str]
     can_manage_governance: bool = False
     can_read_audit_content: bool = False
+    can_manage_memories: bool = False
 
 
 class StaticCredentialStore:
@@ -40,7 +41,10 @@ class StaticCredentialStore:
             read_audit_content = item.get("can_read_audit_content", False)
             if not isinstance(read_audit_content, bool):
                 raise ValueError("can_read_audit_content must be a boolean")
-            if not sources and not manage_governance:
+            manage_memories = item.get("can_manage_memories", False)
+            if not isinstance(manage_memories, bool):
+                raise ValueError("can_manage_memories must be a boolean")
+            if not sources and not manage_governance and not manage_memories:
                 raise ValueError("allowed_source_systems must not be empty")
             self._credentials[digest] = AuthContext(
                 tenant_id=item["tenant_id"],
@@ -48,6 +52,7 @@ class StaticCredentialStore:
                 allowed_source_systems=sources,
                 can_manage_governance=manage_governance,
                 can_read_audit_content=read_audit_content,
+                can_manage_memories=manage_memories,
             )
 
     @classmethod

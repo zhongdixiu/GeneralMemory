@@ -207,7 +207,28 @@ class ProcessingResult(BaseModel):
     reason: str | None = None
     reason_code: str | None = None
     temporal_kind: Literal["current", "historical"] | None = None
-    memory_status: Literal["active", "invalidated", "disputed", "expired"] | None = None
+    memory_status: Literal["active", "invalidated", "disputed", "expired", "deleted"] | None = None
+
+
+class MemoryUpdateRequest(StrictRequestModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=8000)
+    expected_version: int | None = Field(default=None, ge=1, strict=True)
+    reason: str | None = Field(default=None, max_length=512)
+
+    @field_validator("user_id", "content")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("user_id and content must not be blank")
+        return value
+
+
+class MemoryMutationResponse(BaseModel):
+    id: str
+    version: int
+    status: str
+    supersedes_id: str | None = None
 
 
 class SearchRequest(StrictRequestModel):

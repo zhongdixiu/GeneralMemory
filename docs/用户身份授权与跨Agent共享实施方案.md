@@ -19,6 +19,8 @@
 
 ### 当前联调阶段的临时接入方式
 
+- 2026-10-16 配置收敛：部署仅保留业务 Agent 凭证，在同一凭证上配置 can_manage_memories、can_manage_governance、can_read_audit_content 三个默认关闭的能力开关，不要求独立治理 token，不新增角色或授权表；后续仍由独立授权控制面接管。审计内容开关可独立授予审计读取，不要求治理权限。
+
 - 保留现有 StaticCredentialStore：凭证固定 tenant_id、caller_agent_id；Add 的来源允许列表和管理权限继续执行。
 - user_id 暂由受信任的接入后端提供，尚未与公司登录用户核验。普通请求不接受客户端自行选择其他租户；当前租户来自静态凭证。
 - 后续 Search、Profile 按凭证租户和请求指定用户限定个人记忆，默认可读取同用户来自不同 Agent 的有效记忆；不能因为共享而扩大到其他用户、Agent 自身记忆或未经授权的组织记忆。

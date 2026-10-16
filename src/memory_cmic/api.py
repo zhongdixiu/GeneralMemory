@@ -18,6 +18,8 @@ from memory_cmic.api_schemas import (
     GovernancePolicyPatch,
     GovernanceRevertRequest,
     GovernanceRunRequest,
+    MemoryMutationResponse,
+    MemoryUpdateRequest,
     ProfileResponse,
     ProfileResult,
     SearchRequest,
@@ -35,6 +37,12 @@ from memory_cmic.consolidation import RevertConflict, revert_operation
 from memory_cmic.db import create_database_engine
 from memory_cmic.governance_state import backfill_history, backfill_user, create_run, ensure_policy
 from memory_cmic.ingest import IngestError, ingest_and_enqueue
+from memory_cmic.lifecycle import (
+    MemoryUpdateConflict,
+    MemoryVersionConflict,
+    delete_memory,
+    update_memory,
+)
 from memory_cmic.models import GovernanceOperation, GovernancePolicy, MemoryItem, MemoryTask
 from memory_cmic.profile import enqueue_profile_rebuild, read_profiles
 from memory_cmic.providers import ProviderError, QwenFactModel, SiliconFlowEmbedder
@@ -88,7 +96,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         if len(request_id) > 128:
             request_id = f"req_{uuid4().hex}"
         request.state.request_id = request_id
-        if request.method == "POST" and len(await request.body()) > 2 * 1024 * 1024:
+        if request.method in {"POST", "PUT"} and len(await request.body()) > 2 * 1024 * 1024:
             return _error_response(
                 413, "PAYLOAD_TOO_LARGE", "request body exceeds 2 MiB", request_id
             )
@@ -131,6 +139,64 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         if not auth.allowed_source_systems:
             raise ApiError(403, "FORBIDDEN", "an Agent service credential is required")
         return auth
+
+    def manage_memories(auth: AuthContext = Depends(authenticate)) -> AuthContext:
+        if not auth.can_manage_memories:
+            raise ApiError(403, "FORBIDDEN", "memory management permission is required")
+        return auth
+
+    def read_audits(auth: AuthContext = Depends(authenticate)) -> AuthContext:
+        if not (auth.can_manage_governance or auth.can_read_audit_content):
+            raise ApiError(403, "FORBIDDEN", "audit read permission is required")
+        return auth
+
+    def mutation_result(memory: MemoryItem) -> MemoryMutationResponse:
+        return MemoryMutationResponse(
+            id=memory.id, version=memory.version, status=memory.status,
+            supersedes_id=memory.supersedes_id,
+        )
+
+    @app.delete("/api/v1/memories/{memory_id}", response_model=MemoryMutationResponse)
+    def delete_user_memory(
+        memory_id: str,
+        user_id: str = Query(min_length=1, max_length=128, pattern=r"\S"),
+        expected_version: int | None = Query(default=None, ge=1),
+        reason: str | None = Query(default=None, max_length=512),
+        auth: AuthContext = Depends(manage_memories),
+    ) -> MemoryMutationResponse:
+        try:
+            with session_factory.begin() as session:
+                memory = delete_memory(
+                    session, tenant_id=auth.tenant_id, user_id=user_id, memory_id=memory_id,
+                    operator_id=auth.caller_agent_id, reason=reason,
+                    expected_version=expected_version,
+                )
+                return mutation_result(memory)
+        except LookupError as exc:
+            raise ApiError(404, "MEMORY_NOT_FOUND", str(exc)) from exc
+        except MemoryVersionConflict as exc:
+            raise ApiError(409, "MEMORY_VERSION_CONFLICT", str(exc)) from exc
+
+    @app.put("/api/v1/memories/{memory_id}", response_model=MemoryMutationResponse)
+    def update_user_memory(
+        memory_id: str, body: MemoryUpdateRequest,
+        auth: AuthContext = Depends(manage_memories),
+    ) -> MemoryMutationResponse:
+        try:
+            with session_factory.begin() as session:
+                memory = update_memory(
+                    session, tenant_id=auth.tenant_id, user_id=body.user_id,
+                    memory_id=memory_id, content=body.content, operator_id=auth.caller_agent_id,
+                    model_id=resolved_settings.siliconflow_embedding_model,
+                    expected_version=body.expected_version, reason=body.reason,
+                )
+                return mutation_result(memory)
+        except LookupError as exc:
+            raise ApiError(404, "MEMORY_NOT_FOUND", str(exc)) from exc
+        except MemoryVersionConflict as exc:
+            raise ApiError(409, "MEMORY_VERSION_CONFLICT", str(exc)) from exc
+        except MemoryUpdateConflict as exc:
+            raise ApiError(409, "MEMORY_NOT_EDITABLE", str(exc)) from exc
 
     @app.post("/api/v1/memories:search", response_model=SearchResponse)
     def search_user_memories(
@@ -210,7 +276,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         reason_code: str | None = None, include_technical: bool = False,
         include_details: bool = False, limit: int = Query(default=50, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
-        auth: AuthContext = Depends(manage_governance),
+        auth: AuthContext = Depends(read_audits),
     ) -> dict:
         if target_id is not None and target_type is None:
             raise ApiError(422, "INVALID_AUDIT_FILTER", "target_id requires target_type")

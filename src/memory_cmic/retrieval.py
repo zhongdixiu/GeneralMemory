@@ -244,7 +244,13 @@ def _matching_source_ids(
             .exists()
         )
         statement = statement.where(
-            submitted,
+            or_(
+                submitted,
+                (SourceRecord.source_type == "manual")
+                & (SourceRecord.source_system == "memory_management")
+                & (SourceRecord.caller_agent_id == agent_id)
+                & (SourceRecord.agent_id == agent_id),
+            ),
             or_(SourceRecord.agent_id.is_(None), SourceRecord.agent_id == agent_id),
         )
     return set(session.scalars(statement))

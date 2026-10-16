@@ -206,7 +206,7 @@ class MemoryItem(Base):
             name="ck_memory_cognitive_type",
         ),
         CheckConstraint(
-            "status IN ('active', 'invalidated', 'disputed', 'expired')",
+            "status IN ('active', 'invalidated', 'disputed', 'expired', 'deleted')",
             name="ck_memory_status",
         ),
     )
